@@ -61,25 +61,19 @@ static void add_line(const char* t) {
 static void draw_screen(void) {
     vga_clear(0);
     int y = 0;
-    int visible = 18;
-    int end = scroll_offset + visible;
+    int end = scroll_offset + 18;
     if (end > line_count) end = line_count;
     for (int i = scroll_offset; i < end; i++) {
         font_draw_string_bg(0, y, lines[i], 15, 0);
         y += 10;
     }
-    vga_fill_rect(0, 180, 320, 20, 0);
-    vga_draw_rect(0, 180, 320, 1, 7);
-    char prompt[80];
-    kael_strcpy(prompt, cwd);
-    kael_strcat(prompt, "> ");
-    font_draw_string_bg(2, 184, prompt, 10, 0);
-    int px = kael_strlen(prompt) * 8 + 2;
+    font_draw_string_bg(0, 185, "kael> ", 10, 0);
+    int px = 48;
     for (int i = 0; i < cmd_pos; i++) {
         char b[2] = { cmd_buf[i], 0 };
-        font_draw_string_bg(px + i * 8, 184, b, 15, 0);
+        font_draw_string_bg(px + i * 8, 185, b, 15, 0);
     }
-    font_draw_string_bg(px + cmd_pos * 8, 184, "_", 15, 0);
+    font_draw_string_bg(px + cmd_pos * 8, 185, "_", 15, 0);
 }
 
 typedef enum { FS_FILE, FS_DIR } fs_type_t;
