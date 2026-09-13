@@ -1,10 +1,9 @@
-OUTPUT_FORMAT("binary")
+OUTPUT_FORMAT("elf32-i386")
 ENTRY(_start)
 SECTIONS {
-    . = 0x7E00;
-    .text : { *(.text) }
+    . = 0x100000;
+    .text : { *(.multiboot) *(.text) }
     .rodata : { *(.rodata) }
     .data : { *(.data) }
     .bss : { *(COMMON) *(.bss) }
-    __bss_end = .;
 }

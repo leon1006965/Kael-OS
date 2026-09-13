@@ -1,10 +1,5 @@
 #include "types.h"
-#include "gdt.h"
-#include "heap.h"
-#include "ata.h"
-#include "fat.h"
-#include "process.h"
-#include "paging.h"
+#include "multiboot.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -13,17 +8,18 @@ static inline void outb(uint16_t port, uint8_t val) {
 extern void idt_install(void);
 extern void sti_enable(void);
 extern void desktop_run(void);
-extern void timer_init(void);
 
-void kernel_main(void) {
-    gdt_install();
+uint32_t mb_magic;
+uint32_t mb_info_ptr;
+
+void kernel_main(uint32_t magic, uint32_t info_ptr) {
+    mb_magic = magic;
+    mb_info_ptr = info_ptr;
+
     idt_install();
-    heap_init();
-    paging_init();
     outb(0x21, ~(1 << 1));
     outb(0xA1, 0xFF);
-    process_init();
-    timer_init();
+
     sti_enable();
     desktop_run();
     while (1) { asm volatile("hlt"); }

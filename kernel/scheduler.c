@@ -8,8 +8,6 @@ static inline void outb(uint16_t port, uint8_t val) {
     asm volatile("outb %0,%1" : : "a"(val), "Nd"(port));
 }
 
-extern void timer_handler(void);
-
 void timer_init(void) {
     uint32_t divisor = 1193182 / 100;
     outb(0x43, 0x36);
@@ -21,5 +19,4 @@ void timer_init(void) {
 }
 
 void timer_handler_c(void) {
-    process_scheduler_tick();
 }

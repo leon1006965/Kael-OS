@@ -1,9 +1,7 @@
 #include "types.h"
 #include "heap.h"
 
-extern uint32_t __bss_end;
-
-#define HEAP_START  (((uint32_t)&__bss_end + 0x1000) & ~0xFFF)
+#define HEAP_START  0x20000
 #define HEAP_SIZE   0x100000
 #define HEAP_END    (HEAP_START + HEAP_SIZE)
 
