@@ -104,9 +104,10 @@ void font_draw_char(int x, int y, char c, uint8_t color) {
     int idx = (int)c - 32;
     if (idx < 0 || idx > 94) return;
     for (int row = 0; row < 8; row++) {
+        if (y + row < 0 || y + row >= 200) continue;
         uint8_t bits = font_8x8[idx][row];
         for (int col = 0; col < 8; col++) {
-            if (bits & (1 << col))
+            if (x + col >= 0 && x + col < 320 && (bits & (1 << col)))
                 vga_putpixel(x + col, y + row, color);
         }
     }
@@ -123,9 +124,11 @@ void font_draw_string(int x, int y, const char* s, uint8_t color) {
 void font_draw_char_bg(int x, int y, char c, uint8_t fg, uint8_t bg) {
     int idx = (int)c - 32;
     for (int row = 0; row < 8; row++) {
+        if (y + row < 0 || y + row >= 200) continue;
         uint8_t bits = (idx >= 0 && idx <= 94) ? font_8x8[idx][row] : 0;
         for (int col = 0; col < 8; col++)
-            vga_putpixel(x + col, y + row, (bits & (1 << col)) ? fg : bg);
+            if (x + col >= 0 && x + col < 320)
+                vga_putpixel(x + col, y + row, (bits & (1 << col)) ? fg : bg);
     }
 }
 
