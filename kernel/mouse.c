@@ -7,72 +7,121 @@ static inline uint8_t inb(uint16_t port) {
     uint8_t r; asm volatile("inb %1,%0" : "=a"(r) : "Nd"(port)); return r;
 }
 
-static int mouse_x = 160, mouse_y = 100;
-static uint8_t mouse_buttons = 0;
-static uint8_t mouse_cycle = 0;
-static int8_t mouse_byte[3];
+#define PS2_TIMEOUT 100000
 
-static void mouse_wait_read(void) {
-    for (int i = 0; i < 100000; i++)
-        if (inb(0x64) & 1) return;
+static volatile int mouse_x = 40;
+static volatile int mouse_y = 12;
+static volatile uint8_t mouse_buttons = 0;
+static int mouse_has_wheel = 0;
+static volatile uint8_t packet[4];
+static volatile int packet_idx = 0;
+
+static int ps2_wait_write(void) {
+    for (int i = 0; i < PS2_TIMEOUT; i++)
+        if (!(inb(0x64) & 2)) return 0;
+    return -1;
 }
 
-static void mouse_wait_write(void) {
-    for (int i = 0; i < 100000; i++)
-        if (!(inb(0x64) & 2)) return;
+static int ps2_wait_read(void) {
+    for (int i = 0; i < PS2_TIMEOUT; i++)
+        if (inb(0x64) & 1) return 0;
+    return -1;
+}
+
+static uint8_t ps2_read(void) {
+    if (ps2_wait_read() != 0) return 0xFF;
+    return inb(0x60);
+}
+
+static void ps2_write(uint16_t port, uint8_t val) {
+    ps2_wait_write();
+    outb(port, val);
+}
+
+static void mouse_write(uint8_t val) {
+    ps2_write(0x64, 0xD4);
+    ps2_write(0x60, val);
+}
+
+static int mouse_enable_wheel(void) {
+    mouse_write(0xF3); ps2_read();
+    mouse_write(200);  ps2_read();
+    mouse_write(0xF3); ps2_read();
+    mouse_write(100);  ps2_read();
+    mouse_write(0xF3); ps2_read();
+    mouse_write(80);   ps2_read();
+    mouse_write(0xF2); ps2_read();
+    uint8_t id = ps2_read();
+    return id == 0x03;
 }
 
 void mouse_init(void) {
-    mouse_wait_write();
-    outb(0x64, 0xA8);
-    mouse_wait_write();
-    outb(0x64, 0x20);
-    mouse_wait_read();
-    uint8_t config = inb(0x60);
+    for (int i = 0; i < PS2_TIMEOUT && (inb(0x64) & 1); i++) inb(0x60);
+    for (int i = 0; i < PS2_TIMEOUT && (inb(0x64) & 2); i++);
+
+    ps2_write(0x64, 0xA8);
+
+    ps2_write(0x64, 0x20);
+    uint8_t config = ps2_read();
     config |= 0x02;
-    config &= ~0x20;
-    mouse_wait_write();
-    outb(0x64, 0x20);
-    mouse_wait_write();
-    outb(0x60, config);
-    mouse_wait_write();
-    outb(0x64, 0xD4);
-    mouse_wait_write();
-    outb(0x60, 0xFF);
-    for (volatile int i = 0; i < 100000; i++) {}
-    mouse_wait_write();
-    outb(0x64, 0xD4);
-    mouse_wait_write();
-    outb(0x60, 0xF4);
-    mouse_x = 160;
-    mouse_y = 100;
+    config |= 0x20;
+    ps2_write(0x64, 0x60);
+    ps2_write(0x60, config);
+
+    mouse_write(0xF6);
+    ps2_read();
+
+    mouse_has_wheel = mouse_enable_wheel();
+
+    mouse_write(0xF4);
+    ps2_read();
 }
 
-void mouse_handler(void) {
-    uint8_t data = inb(0x60);
-    switch (mouse_cycle) {
-        case 0:
-            mouse_byte[0] = data;
-            if (data & 0x08) mouse_cycle = 1;
-            break;
-        case 1:
-            mouse_byte[1] = data;
-            mouse_cycle = 2;
-            break;
-        case 2:
-            mouse_byte[2] = data;
-            mouse_x += mouse_byte[1];
-            mouse_y -= mouse_byte[2];
-            if (mouse_x < 0) mouse_x = 0;
-            if (mouse_x > 319) mouse_x = 319;
-            if (mouse_y < 0) mouse_y = 0;
-            if (mouse_y > 199) mouse_y = 199;
-            mouse_buttons = mouse_byte[0] & 0x07;
-            mouse_cycle = 0;
-            break;
+static void mouse_process_byte(uint8_t data) {
+    int last = mouse_has_wheel ? 3 : 2;
+
+    if (packet_idx == 0) {
+        if (!(data & 0x08)) return;
+        packet[0] = data;
+        packet_idx = 1;
+    } else if (packet_idx < last) {
+        packet[packet_idx++] = data;
+    } else {
+        packet[packet_idx] = data;
+        packet_idx = 0;
+
+        int buttons = packet[0] & 0x07;
+        int dx = 0, dy = 0;
+        if (!(packet[0] & 0xC0)) {
+            dx = (int)(int8_t)packet[1];
+            dy = -(int)(int8_t)packet[2];
+        }
+        mouse_buttons = buttons;
+        mouse_x += dx;
+        mouse_y += dy;
+        if (mouse_x < 0) mouse_x = 0;
+        if (mouse_x > 79) mouse_x = 79;
+        if (mouse_y < 0) mouse_y = 0;
+        if (mouse_y > 24) mouse_y = 24;
     }
 }
 
-int mouse_get_x(void) { return mouse_x; }
-int mouse_get_y(void) { return mouse_y; }
-uint8_t mouse_get_buttons(void) { return mouse_buttons; }
+void mouse_handler(void) {
+    uint8_t st = inb(0x64);
+    if ((st & 0x21) != 0x21) return;
+    mouse_process_byte(inb(0x60));
+}
+
+void mouse_poll(void) {
+    asm volatile("cli");
+    for (int guard = 0; guard < 64; guard++) {
+        uint8_t st = inb(0x64);
+        if ((st & 0x21) != 0x21) break;
+        mouse_process_byte(inb(0x60));
+    }
+    asm volatile("sti");
+}
+
+int mouse_get_x(void) { mouse_poll(); return mouse_x; }
+int mouse_get_y(void) { mouse_poll(); return mouse_y; }
+uint8_t mouse_get_buttons(void) { mouse_poll(); return mouse_buttons; }

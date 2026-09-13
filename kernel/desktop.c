@@ -8,6 +8,10 @@ extern uint8_t vga_text_make_color(uint8_t fg, uint8_t bg);
 extern void vga_set_palette(uint8_t idx, uint8_t r, uint8_t g, uint8_t b);
 extern char kbd_getchar(void);
 
+extern int mouse_get_x(void);
+extern int mouse_get_y(void);
+extern uint8_t mouse_get_buttons(void);
+
 extern void program_cube(void);
 extern void program_notepad(void);
 extern void program_fm(void);
@@ -88,6 +92,8 @@ static void draw_screen(void) {
     vga_text_puts(prompt, 0x0A);
     vga_text_puts(cmd_buf, 0x0F);
     vga_text_putchar('_', 0x07);
+    vga_text_set_pos(mouse_get_x(), mouse_get_y());
+    vga_text_putchar(0xDB, mouse_get_buttons() ? 0x4C : 0x1F);
 }
 
 typedef enum { FS_FILE, FS_DIR } fs_type_t;
