@@ -253,17 +253,25 @@ void desktop_run(void) {
     add_line("Type 'help' for commands.");
     add_line("");
     draw_screen();
+    int last_mx = -1, last_my = -1;
     while (1) {
         char c = kbd_getchar();
-        if (!c) continue;
-        if (c == '\t') { draw_screen(); continue; }
-        if (c == '\n' || c == '\r') {
-            cmd_buf[cmd_pos] = '\0';
-            if (cmd_pos > 0) process_command();
-            cmd_pos = 0; cmd_buf[0] = '\0';
-        } else if (c == 8) { if (cmd_pos > 0) cmd_pos--; }
-        else if (c == 0x11 || c == 0x12) { }
-        else { if (cmd_pos < MAX_INPUT) cmd_buf[cmd_pos++] = c; }
-        draw_screen();
+        int mx = mouse_get_x();
+        int my = mouse_get_y();
+        if (c) {
+            if (c == '\t') { draw_screen(); continue; }
+            if (c == '\n' || c == '\r') {
+                cmd_buf[cmd_pos] = '\0';
+                if (cmd_pos > 0) process_command();
+                cmd_pos = 0; cmd_buf[0] = '\0';
+            } else if (c == 8) { if (cmd_pos > 0) cmd_pos--; }
+            else if (c == 0x11 || c == 0x12) { }
+            else { if (cmd_pos < MAX_INPUT) cmd_buf[cmd_pos++] = c; }
+            draw_screen();
+            last_mx = mx; last_my = my;
+        } else if (mx != last_mx || my != last_my) {
+            draw_screen();
+            last_mx = mx; last_my = my;
+        }
     }
 }

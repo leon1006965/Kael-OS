@@ -28,7 +28,6 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
     outb(0xA1, 0xFF);
 
     keyboard_init();
-
     mouse_init();
 
     uint8_t mask = inb(0xA1);
@@ -38,7 +37,7 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
     mask2 &= ~(1 << 2);
     outb(0x21, mask2);
 
-    outb(0x21, ~(1 << 1));
+    outb(0x21, ~(1 << 1) & ~(1 << 2));
 
     sti_enable();
     desktop_run();
