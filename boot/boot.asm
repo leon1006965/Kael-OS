@@ -46,7 +46,7 @@ start:
     mov si, msg_loaded
     call print_real
 
-    mov ax, 0x0013
+    mov ax, 0x0003
     int 0x10
 
     in al, 0x92

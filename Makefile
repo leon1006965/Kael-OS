@@ -36,7 +36,10 @@ kernel/kael.elf: $(ALL_OBJS) kernel/linker.ld
 kernel/kael.bin: kernel/kael.elf
 	objcopy -O binary $< $@
 
-$(FLOPPY_IMG): kernel/kael.bin
+boot/boot.bin: boot/boot.asm
+	$(AS) -f bin $< -o $@
+
+$(FLOPPY_IMG): kernel/kael.bin boot/boot.bin
 	cat boot/boot.bin kernel/kael.bin > $@
 	truncate -s 1474560 $@
 
