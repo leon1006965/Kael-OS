@@ -149,11 +149,33 @@ static fs_entry_t* fs_find(const char* name) {
     return 0;
 }
 
-/* Low-level VGA text cell access */
+/* Low-level VGA text cell access with backbuffer */
+static inline void outb(uint16_t p, uint8_t v) { asm volatile("outb %0,%1" : : "a"(v), "Nd"(p)); }
+static inline uint8_t inb(uint16_t p) { uint8_t r; asm volatile("inb %1,%0" : "=a"(r) : "Nd"(p)); return r; }
+
 static volatile uint16_t* const VGA = (volatile uint16_t*)0xB8000;
+static uint16_t back[COLS * ROWS];
+static uint16_t shown[COLS * ROWS];
+
 static void put_cell(int x, int y, char c, uint8_t attr) {
     if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return;
-    VGA[y * COLS + x] = (uint16_t)c | ((uint16_t)attr << 8);
+    back[y * COLS + x] = (uint16_t)(uint8_t)c | ((uint16_t)attr << 8);
+}
+
+static void present(void) {
+    for (int i = 0; i < COLS * ROWS; i++) {
+        if (back[i] != shown[i]) { VGA[i] = back[i]; shown[i] = back[i]; }
+    }
+}
+
+static void vga_disable_blink(void) {
+    inb(0x3DA);
+    outb(0x3C0, 0x30);
+    uint8_t m = inb(0x3C1);
+    m &= 0xF7;
+    outb(0x3C0, m);
+    inb(0x3DA);
+    outb(0x3C0, 0x20);
 }
 static void fill_cells(int x, int y, int w, int h, char c, uint8_t attr) {
     for (int j = 0; j < h; j++)
@@ -346,6 +368,7 @@ static void redraw(void) {
         if (wins[i].active) draw_window(i);
     draw_menu();
     draw_cursor(mouse_get_x(), mouse_get_y());
+    present();
 }
 
 /* Terminal command processing */
@@ -411,6 +434,7 @@ static void term_process(window_t* w, const char* cmd) {
     } else if (kael_strcmp(cmd, "halt") == 0) {
         fill_cells(0, 0, COLS, ROWS, ' ', ATTR(WHITE, BLACK));
         draw_text_centered(0, 12, COLS, "System halted.", ATTR(WHITE, BLACK));
+        present();
         while (1) asm volatile("hlt");
     } else if (cmd[0] != 0) {
         term_add_line(w, "Unknown command. Try 'help'.");
@@ -527,6 +551,7 @@ static int win_hit(int idx, int mx, int my) {
 }
 
 void desktop_run(void) {
+    vga_disable_blink();
     fs_init();
     /* clear screen */
     fill_cells(0, 0, COLS, ROWS, ' ', ATTR(DESKTOP_BG, DESKTOP_BG));
@@ -573,7 +598,7 @@ void desktop_run(void) {
             } else if (menu_open) {
                 if (c == '\n' || c == '\r') {
                     menu_open = 0;
-                    if (menu_types[menu_sel] == 99) { /* Exit */ fill_cells(0,0,COLS,ROWS,' ',ATTR(WHITE,BLACK)); draw_text_centered(0,12,COLS,"Goodbye!",ATTR(WHITE,BLACK)); while(1) asm volatile("hlt"); }
+                    if (menu_types[menu_sel] == 99) { fill_cells(0,0,COLS,ROWS,' ',ATTR(WHITE,BLACK)); draw_text_centered(0,12,COLS,"Goodbye!",ATTR(WHITE,BLACK)); present(); while(1) asm volatile("hlt"); }
                     win_create(menu_types[menu_sel]);
                     need_redraw = 1;
                 } else if (c == 0x11) { menu_sel = (menu_sel - 1 + MENU_ITEMS) % MENU_ITEMS; need_redraw = 1; }
@@ -607,7 +632,7 @@ void desktop_run(void) {
                         if (item >= 0 && item < MENU_ITEMS) {
                             menu_sel = item;
                             menu_open = 0;
-                            if (menu_types[item] == 99) { fill_cells(0,0,COLS,ROWS,' ',ATTR(WHITE,BLACK)); draw_text_centered(0,12,COLS,"Goodbye!",ATTR(WHITE,BLACK)); while(1) asm volatile("hlt"); }
+                            if (menu_types[item] == 99) { fill_cells(0,0,COLS,ROWS,' ',ATTR(WHITE,BLACK)); draw_text_centered(0,12,COLS,"Goodbye!",ATTR(WHITE,BLACK)); present(); while(1) asm volatile("hlt"); }
                             win_create(menu_types[item]);
                             need_redraw = 1;
                         }
@@ -664,14 +689,14 @@ void desktop_run(void) {
             }
         }
 
-        /* Always redraw - longer delay prevents flashing */
-        redraw();
+        /* Redraw when UI changed, mouse moved, or buttons changed */
+        if (need_redraw || moved || btns != last_buttons)
+            redraw();
 
         last_mx = mx;
         last_my = my;
         last_buttons = btns;
 
-        /* Longer delay to prevent flicker */
-        for (volatile int i = 0; i < 80000; i++);
+        for (volatile int i = 0; i < 20000; i++);
     }
 }

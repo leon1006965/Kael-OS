@@ -10,7 +10,7 @@ static int cursor_y = 0;
 
 static void vga_text_putchar_at(int x, int y, char c, uint8_t color) {
     if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
-    VGA_TEXT[y * VGA_COLS + x] = (uint16_t)c | ((uint16_t)color << 8);
+    VGA_TEXT[y * VGA_COLS + x] = (uint16_t)(uint8_t)c | ((uint16_t)color << 8);
 }
 
 static void vga_text_scroll(void) {

@@ -9,8 +9,8 @@ static inline uint8_t inb(uint16_t port) {
 
 #define KBD_BUFFER_SIZE 128
 static char kbd_buffer[KBD_BUFFER_SIZE];
-static int kbd_head = 0;
-static int kbd_tail = 0;
+static volatile int kbd_head = 0;
+static volatile int kbd_tail = 0;
 static int shift_held = 0;
 static int tab_held = 0;
 static int e0_prefix = 0;
@@ -72,8 +72,8 @@ void keyboard_handler(void) {
 
     if (sc == 0x2A || sc == 0x36) { shift_held = 1; return; }
     if (sc == 0xAA || sc == 0xB6) { shift_held = 0; return; }
-    if (sc == 0x0F) { tab_held = 1; return; }
     if (sc == 0x8F) { tab_held = 0; return; }
+    if (sc == 0x0F) tab_held = 1;
     if (sc & 0x80) return;
 
     char c = shift_held ? scancode_shift_table[sc] : scancode_table[sc];

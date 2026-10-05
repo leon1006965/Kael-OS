@@ -85,7 +85,8 @@ int mouse_init(void) {
     ps2_write(0x64, 0x20);
     c = ps2_read();
     config = (c < 0) ? config : (uint8_t)c;
-    config |= 0x02;
+    config |= 0x43;
+    config &= ~0x30;
     ps2_write(0x64, 0x60);
     ps2_write(0x60, config);
 
@@ -137,8 +138,6 @@ static void drain(void) {
 
 void mouse_handler(void) {
     drain();
-    outb(0xA0, 0x20);
-    outb(0x20, 0x20);
 }
 
 void mouse_poll(void) {
