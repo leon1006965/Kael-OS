@@ -339,28 +339,26 @@ static void draw_cursor(int mx, int my) {
     }
 }
 
-/* Lightweight cursor update - only changes 2 cells, no full redraw */
+/* Cursor save/restore - remembers exact cell under cursor */
 static int prev_cx = -1, prev_cy = -1;
-static void update_cursor(int mx, int my) {
-    /* Erase old cursor */
-    if (prev_cx >= 0 && prev_cx < COLS && prev_cy >= 0 && prev_cy < ROWS) {
-        put_cell(prev_cx, prev_cy, ' ', ATTR(DESKTOP_BG, DESKTOP_BG));
-        /* If old cursor was on a window, redraw that cell from window content */
-        for (int i = 0; i < MAX_WINDOWS; i++) {
-            if (!wins[i].active) continue;
-            window_t* w = &wins[i];
-            if (prev_cx >= w->x && prev_cx < w->x + w->w &&
-                prev_cy >= w->y && prev_cy < w->y + w->h) {
-                /* Redraw the whole window to restore content under cursor */
-                draw_window(i);
-                break;
-            }
-        }
-    }
-    /* Draw new cursor */
+static uint16_t saved_cell = 0;
+
+static void save_cursor_cell(int mx, int my) {
     if (mx >= 0 && mx < COLS && my >= 0 && my < ROWS) {
+        saved_cell = VGA[my * COLS + mx];
+    }
+}
+
+static void update_cursor(int mx, int my) {
+    /* Restore old cell exactly as it was */
+    if (prev_cx >= 0 && prev_cx < COLS && prev_cy >= 0 && prev_cy < ROWS) {
+        VGA[prev_cy * COLS + prev_cx] = saved_cell;
+    }
+    /* Save new cell before drawing cursor */
+    if (mx >= 0 && mx < COLS && my >= 0 && my < ROWS) {
+        saved_cell = VGA[my * COLS + mx];
         uint8_t attr = (mouse_get_buttons() & 1) ? ATTR(BLACK, LIGHTRED) : ATTR(BLACK, WHITE);
-        put_cell(mx, my, 0xDB, attr);
+        VGA[my * COLS + mx] = (uint16_t)0xDB | ((uint16_t)attr << 8);
     }
     prev_cx = mx;
     prev_cy = my;
@@ -372,9 +370,12 @@ static void redraw(void) {
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (wins[i].active) draw_window(i);
     draw_menu();
-    draw_cursor(mouse_get_x(), mouse_get_y());
-    prev_cx = mouse_get_x();
-    prev_cy = mouse_get_y();
+    int mx = mouse_get_x();
+    int my = mouse_get_y();
+    save_cursor_cell(mx, my);
+    draw_cursor(mx, my);
+    prev_cx = mx;
+    prev_cy = my;
 }
 
 /* Terminal command processing */
