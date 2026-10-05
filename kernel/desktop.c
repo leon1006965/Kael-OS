@@ -415,18 +415,12 @@ static void term_process(window_t* w, const char* cmd) {
         term_add_line(w, "Kael OS v2.1");
         term_add_line(w, "Kernel: Aether 32-bit x86");
     } else if (kael_strcmp(cmd, "fetch") == 0) {
-        term_add_line(w, "        ,--.   ");
-        term_add_line(w, "       |  |   Kael OS");
-        term_add_line(w, "   .---|  |--.-.-------.");
-        term_add_line(w, "   | = | ===  | ===  K |");
-        term_add_line(w, "   |   |   |  |       |");
-        term_add_line(w, "   `---'---'--'`-------'");
         term_add_line(w, "  -------------------------");
-        term_add_line(w, "  OS:       Kael OS v2.1");
-        term_add_line(w, "  Kernel:   Aether 32-bit x86");
+        term_add_line(w, "  OS:         Kael OS v2.1");
+        term_add_line(w, "  Kernel:     Aether 32-bit x86");
         term_add_line(w, "  Bootloader: KaelBoot (custom MBR)");
-        term_add_line(w, "  Shell:    KaelTerm");
-        term_add_line(w, "  Display:  VGA text 80x25");
+        term_add_line(w, "  Shell:      KaelTerm");
+        term_add_line(w, "  Display:    VGA text 80x25");
     } else if (kael_strcmp(cmd, "whoami") == 0) {
         term_add_line(w, "user@kael");
     } else if (kael_strcmp(cmd, "clear") == 0) {
