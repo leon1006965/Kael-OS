@@ -84,13 +84,29 @@ static int starts_with(const char* s, const char* p) {
 #define WIN_CALC 2
 #define WIN_FILES 3
 #define WIN_ABOUT 4
+#define WIN_NOTEPAD 5
+
+/* Notepad format modes */
+#define NP_NORMAL 0
+#define NP_HEADER 1
+#define NP_BOLD 2
+#define NP_ITALIC 3
+#define NP_BULLET 4
+#define NP_MODES 5
+
+/* Notepad line format flags */
+#define FMT_NORMAL 0x00
+#define FMT_HEADER 0x01
+#define FMT_BOLD   0x02
+#define FMT_ITALIC 0x04
+#define FMT_BULLET 0x08
 
 /* Menu items */
-#define MENU_ITEMS 5
+#define MENU_ITEMS 6
 static const char* menu_labels[MENU_ITEMS] = {
-    " Terminal ", " Calculator ", " File Manager ", " About ", " Exit "
+    " Terminal ", " Calculator ", " Notepad ", " File Manager ", " About ", " Exit "
 };
-static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_CALC, WIN_FILES, WIN_ABOUT, 99 };
+static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_CALC, WIN_NOTEPAD, WIN_FILES, WIN_ABOUT, 99 };
 
 /* Window state */
 typedef struct {
@@ -113,6 +129,13 @@ typedef struct {
     int op;
     int new_num;
     int error;
+    /* notepad state */
+    char np_lines[20][68];
+    uint8_t np_fmt[20];
+    int np_count;
+    int np_row;
+    int np_col;
+    int np_mode;
 } window_t;
 
 #define MAX_WINDOWS 6
@@ -234,6 +257,15 @@ static int win_create(int type) {
                     wins[i].w = 42; wins[i].h = 8;
                     kael_strcpy(wins[i].title, "About Kael OS");
                     break;
+                case WIN_NOTEPAD:
+                    wins[i].w = 56; wins[i].h = 18;
+                    kael_strcpy(wins[i].title, "Notepad");
+                    wins[i].np_count = 0;
+                    wins[i].np_row = 0;
+                    wins[i].np_col = 0;
+                    wins[i].np_mode = NP_NORMAL;
+                    for (int j = 0; j < 20; j++) { wins[i].np_lines[j][0] = 0; wins[i].np_fmt[j] = FMT_NORMAL; }
+                    break;
             }
             for (int j = 0; j < MAX_WINDOWS; j++) if (j != i) wins[j].focused = 0;
             return i;
@@ -333,6 +365,56 @@ static void draw_window(int idx) {
         draw_text_centered(cx, cy + 2, cw, "A lightweight hobby OS", ATTR(LIGHTGRAY, CONTENT_BG));
         draw_text_centered(cx, cy + 3, cw, "with GUI and PS/2 input", ATTR(LIGHTGRAY, CONTENT_BG));
         draw_text_centered(cx, cy + 5, cw, "Click X to close", ATTR(DARKGRAY, CONTENT_BG));
+    } else if (w->type == WIN_NOTEPAD) {
+        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
+        /* Status bar showing current format mode */
+        const char* mode_names[NP_MODES] = { "Normal", "Header", "Bold", "Italic", "Bullet" };
+        uint8_t mode_colors[NP_MODES] = { LIGHTGRAY, YELLOW, WHITE, LIGHTCYAN, LIGHTGREEN };
+        fill_cells(cx, cy, cw, 1, ' ', ATTR(BLACK, DARKGRAY));
+        draw_text(cx, cy, "Mode: ", ATTR(LIGHTGRAY, DARKGRAY));
+        draw_text(cx + 6, cy, mode_names[w->np_mode], ATTR(mode_colors[w->np_mode], DARKGRAY));
+        draw_text(cx + 14, cy, "`=cycle  Enter=new line", ATTR(DARKGRAY, DARKGRAY));
+
+        /* Draw notepad lines */
+        int max_lines = ch - 2;
+        int start = 0;
+        if (w->np_row >= max_lines) start = w->np_row - max_lines + 1;
+        for (int i = 0; i < max_lines && start + i <= w->np_count; i++) {
+            int li = start + i;
+            int y = cy + 1 + i;
+            uint8_t fmt = (li < w->np_count) ? w->np_fmt[li] : FMT_NORMAL;
+            uint8_t fg = LIGHTGRAY;
+            if (fmt & FMT_HEADER) fg = YELLOW;
+            else if (fmt & FMT_BOLD) fg = WHITE;
+            else if (fmt & FMT_ITALIC) fg = LIGHTCYAN;
+
+            int tx = cx;
+            /* Bullet prefix */
+            if (fmt & FMT_BULLET) {
+                put_cell(tx++, y, 0x07, ATTR(LIGHTGREEN, CONTENT_BG));
+                put_cell(tx++, y, ' ', ATTR(fg, CONTENT_BG));
+            }
+            /* Header gets a background highlight */
+            if (fmt & FMT_HEADER) {
+                fill_cells(cx, y, cw, 1, ' ', ATTR(YELLOW, BLUE));
+                tx = cx + ((fmt & FMT_BULLET) ? 2 : 0);
+            }
+            /* Draw the text */
+            const char* txt = (li < w->np_count) ? w->np_lines[li] : "";
+            int ti = 0;
+            while (txt[ti] && tx < cx + cw - 1) {
+                put_cell(tx++, y, txt[ti++], ATTR(fg, (fmt & FMT_HEADER) ? BLUE : CONTENT_BG));
+            }
+            /* Cursor on current line */
+            if (li == w->np_row) {
+                int cursor_x = cx + ((fmt & FMT_BULLET) ? 2 : 0) + w->np_col;
+                if (cursor_x < cx + cw) {
+                    uint8_t cattr = (fmt & FMT_HEADER) ? ATTR(BLUE, YELLOW) : ATTR(BLACK, WHITE);
+                    char cc = (w->np_col < kael_strlen(w->np_lines[li])) ? w->np_lines[li][w->np_col] : ' ';
+                    put_cell(cursor_x, y, cc, cattr);
+                }
+            }
+        }
     }
 }
 
@@ -584,8 +666,8 @@ void desktop_run(void) {
                 menu_open = !menu_open;
                 menu_sel = 0;
                 need_redraw = 1;
-            } else if (c == '`') {
-                /* Backtick - also toggle start menu */
+            } else if (c == '`' && !(fw >= 0 && wins[fw].type == WIN_NOTEPAD)) {
+                /* Backtick - toggle start menu (unless notepad is focused) */
                 menu_open = !menu_open;
                 menu_sel = 0;
                 need_redraw = 1;
@@ -601,6 +683,75 @@ void desktop_run(void) {
                 if (wins[fw].type == WIN_TERMINAL) {
                     term_key(&wins[fw], c);
                     need_redraw = 1;
+                } else if (wins[fw].type == WIN_NOTEPAD) {
+                    window_t* nw = &wins[fw];
+                    if (c == '`') {
+                        nw->np_mode = (nw->np_mode + 1) % NP_MODES;
+                        /* Apply mode to current line if it exists */
+                        if (nw->np_row < nw->np_count) {
+                            nw->np_fmt[nw->np_row] = FMT_NORMAL;
+                            if (nw->np_mode == NP_HEADER) nw->np_fmt[nw->np_row] = FMT_HEADER;
+                            else if (nw->np_mode == NP_BOLD) nw->np_fmt[nw->np_row] = FMT_BOLD;
+                            else if (nw->np_mode == NP_ITALIC) nw->np_fmt[nw->np_row] = FMT_ITALIC;
+                            else if (nw->np_mode == NP_BULLET) nw->np_fmt[nw->np_row] = FMT_BULLET;
+                        }
+                        need_redraw = 1;
+                    } else if (c == '\n' || c == '\r') {
+                        /* Enter: new line */
+                        if (nw->np_count < 19) nw->np_count++;
+                        nw->np_row = nw->np_count;
+                        nw->np_col = 0;
+                        nw->np_lines[nw->np_row][0] = 0;
+                        nw->np_fmt[nw->np_row] = FMT_NORMAL;
+                        nw->np_mode = NP_NORMAL;
+                        need_redraw = 1;
+                    } else if (c == 8) {
+                        /* Backspace */
+                        if (nw->np_col > 0) {
+                            nw->np_col--;
+                            int len = kael_strlen(nw->np_lines[nw->np_row]);
+                            for (int k = nw->np_col; k < len; k++)
+                                nw->np_lines[nw->np_row][k] = nw->np_lines[nw->np_row][k + 1];
+                            nw->np_lines[nw->np_row][len - 1] = 0;
+                            need_redraw = 1;
+                        } else if (nw->np_row > 0) {
+                            /* Merge with previous line */
+                            nw->np_row--;
+                            nw->np_col = kael_strlen(nw->np_lines[nw->np_row]);
+                            need_redraw = 1;
+                        }
+                    } else if (c == 0x11) { /* Up arrow */
+                        if (nw->np_row > 0) { nw->np_row--; int l = kael_strlen(nw->np_lines[nw->np_row]); if (nw->np_col > l) nw->np_col = l; need_redraw = 1; }
+                    } else if (c == 0x12) { /* Down arrow */
+                        if (nw->np_row < nw->np_count) { nw->np_row++; int l = kael_strlen(nw->np_lines[nw->np_row]); if (nw->np_col > l) nw->np_col = l; need_redraw = 1; }
+                    } else if (c == 0x13) { /* Left arrow */
+                        if (nw->np_col > 0) nw->np_col--;
+                        else if (nw->np_row > 0) { nw->np_row--; nw->np_col = kael_strlen(nw->np_lines[nw->np_row]); }
+                        need_redraw = 1;
+                    } else if (c == 0x14) { /* Right arrow */
+                        int l = kael_strlen(nw->np_lines[nw->np_row]);
+                        if (nw->np_col < l) nw->np_col++;
+                        else if (nw->np_row < nw->np_count) { nw->np_row++; nw->np_col = 0; }
+                        need_redraw = 1;
+                    } else if (c >= 32 && c < 127) {
+                        /* Printable character */
+                        if (nw->np_row > nw->np_count) nw->np_count = nw->np_row;
+                        if (nw->np_count >= 20) { nw->np_count = 19; nw->np_row = 19; }
+                        int len = kael_strlen(nw->np_lines[nw->np_row]);
+                        if (len < 66) {
+                            for (int k = len; k > nw->np_col; k--)
+                                nw->np_lines[nw->np_row][k] = nw->np_lines[nw->np_row][k - 1];
+                            nw->np_lines[nw->np_row][nw->np_col] = c;
+                            nw->np_lines[nw->np_row][len + 1] = 0;
+                            nw->np_col++;
+                            /* Apply current mode to line */
+                            if (nw->np_mode == NP_HEADER) nw->np_fmt[nw->np_row] = FMT_HEADER;
+                            else if (nw->np_mode == NP_BOLD) nw->np_fmt[nw->np_row] = FMT_BOLD;
+                            else if (nw->np_mode == NP_ITALIC) nw->np_fmt[nw->np_row] = FMT_ITALIC;
+                            else if (nw->np_mode == NP_BULLET) nw->np_fmt[nw->np_row] = FMT_BULLET;
+                            need_redraw = 1;
+                        }
+                    }
                 } else if (c == 'q') {
                     win_close(fw);
                     need_redraw = 1;
