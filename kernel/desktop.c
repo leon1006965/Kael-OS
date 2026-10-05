@@ -84,20 +84,40 @@ static int starts_with(const char* s, const char* p) {
 #define WIN_CALC 2
 #define WIN_FILES 3
 #define WIN_ABOUT 4
-#define WIN_MONITOR 5
-#define WIN_SETTINGS 6
-#define WIN_CLOCK 7
-#define WIN_CALENDAR 8
-#define WIN_STOPWATCH 9
-#define WIN_PAINT 10
-#define WIN_PASSWORD 11
+#define WIN_CLOCK 5
+#define WIN_CALENDAR 6
+
+/* CMOS Real-Time Clock */
+static inline void outb(uint16_t p, uint8_t v) { asm volatile("outb %0,%1" : : "a"(v), "Nd"(p)); }
+static inline uint8_t inb(uint16_t p) { uint8_t r; asm volatile("inb %1,%0" : "=a"(r) : "Nd"(p)); return r; }
+static uint8_t cmos_read(uint8_t reg) { outb(0x70, reg); return inb(0x71); }
+static int bcd2bin(uint8_t b) { return (b >> 4) * 10 + (b & 0x0F); }
+static int g_hour, g_min, g_sec, g_month, g_day, g_year, g_dow;
+
+static void rtc_init(void) {
+    g_sec = bcd2bin(cmos_read(0x00));
+    g_min = bcd2bin(cmos_read(0x02));
+    uint8_t h = cmos_read(0x04);
+    g_hour = bcd2bin(h);
+    uint8_t sb = cmos_read(0x0B);
+    if (!(sb & 0x02)) {
+        int pm = (h & 0x80) != 0;
+        g_hour = g_hour & 0x7F;
+        if (pm && g_hour != 12) g_hour += 12;
+        if (!pm && g_hour == 12) g_hour = 0;
+    }
+    g_dow = bcd2bin(cmos_read(0x06));
+    g_day = bcd2bin(cmos_read(0x07));
+    g_month = bcd2bin(cmos_read(0x08));
+    g_year = 2000 + bcd2bin(cmos_read(0x09));
+}
 
 /* Menu items */
-#define MENU_ITEMS 7
+#define MENU_ITEMS 5
 static const char* menu_labels[MENU_ITEMS] = {
-    " Terminal ", " Calculator ", " Monitor ", " Settings ", " Calendar ", " Stopwatch ", " Exit "
+    " Terminal ", " Calculator ", " Clock ", " Calendar ", " Exit "
 };
-static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_CALC, WIN_MONITOR, WIN_SETTINGS, WIN_CALENDAR, WIN_STOPWATCH, 99 };
+static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_CALC, WIN_CLOCK, WIN_CALENDAR, 99 };
 
 /* Window state */
 typedef struct {
@@ -120,15 +140,7 @@ typedef struct {
     int op;
     int new_num;
     int error;
-    /* paint state */
-    char paint_grid[16][48];
-    int paint_px, paint_py;
-    int paint_color;
 } window_t;
-
-/* Global state for clock and stopwatch */
-static int g_hour = 12, g_min = 0, g_sec = 0;
-static int sw_running = 0, sw_h = 0, sw_m = 0, sw_s = 0;
 
 #define MAX_WINDOWS 6
 static window_t wins[MAX_WINDOWS];
@@ -165,9 +177,6 @@ static fs_entry_t* fs_find(const char* name) {
 }
 
 /* Low-level VGA text cell access with backbuffer */
-static inline void outb(uint16_t p, uint8_t v) { asm volatile("outb %0,%1" : : "a"(v), "Nd"(p)); }
-static inline uint8_t inb(uint16_t p) { uint8_t r; asm volatile("inb %1,%0" : "=a"(r) : "Nd"(p)); return r; }
-
 static volatile uint16_t* const VGA = (volatile uint16_t*)0xB8000;
 static uint16_t back[COLS * ROWS];
 static uint16_t shown[COLS * ROWS];
@@ -249,14 +258,6 @@ static int win_create(int type) {
                     wins[i].w = 42; wins[i].h = 8;
                     kael_strcpy(wins[i].title, "About Kael OS");
                     break;
-                case WIN_MONITOR:
-                    wins[i].w = 46; wins[i].h = 14;
-                    kael_strcpy(wins[i].title, "System Monitor");
-                    break;
-                case WIN_SETTINGS:
-                    wins[i].w = 40; wins[i].h = 12;
-                    kael_strcpy(wins[i].title, "Settings");
-                    break;
                 case WIN_CLOCK:
                     wins[i].w = 28; wins[i].h = 8;
                     kael_strcpy(wins[i].title, "Clock");
@@ -264,23 +265,6 @@ static int win_create(int type) {
                 case WIN_CALENDAR:
                     wins[i].w = 40; wins[i].h = 14;
                     kael_strcpy(wins[i].title, "Calendar");
-                    break;
-                case WIN_STOPWATCH:
-                    wins[i].w = 32; wins[i].h = 8;
-                    kael_strcpy(wins[i].title, "Stopwatch");
-                    break;
-                case WIN_PAINT:
-                    wins[i].w = 52; wins[i].h = 20;
-                    kael_strcpy(wins[i].title, "Paint");
-                    wins[i].paint_px = 24; wins[i].paint_py = 8;
-                    wins[i].paint_color = 7;
-                    for (int r = 0; r < 16; r++)
-                        for (int c = 0; c < 48; c++)
-                            wins[i].paint_grid[r][c] = ' ';
-                    break;
-                case WIN_PASSWORD:
-                    wins[i].w = 36; wins[i].h = 12;
-                    kael_strcpy(wins[i].title, "Password Generator");
                     break;
             }
             for (int j = 0; j < MAX_WINDOWS; j++) if (j != i) wins[j].focused = 0;
@@ -303,15 +287,11 @@ static void draw_desktop(void) {
     /* Start button */
     fill_cells(0, ROWS - 1, 7, 1, ' ', ATTR(BLACK, GREEN));
     draw_text(1, ROWS - 1, "Start", ATTR(BLACK, GREEN));
-    /* Clock in taskbar */
-    char cbuf[16];
-    int v = g_hour; int bi = 0;
-    if (v >= 10) cbuf[bi++] = '0' + v / 10;
-    cbuf[bi++] = '0' + v % 10; cbuf[bi++] = ':';
-    v = g_min; if (v >= 10) cbuf[bi++] = '0' + v / 10;
-    cbuf[bi++] = '0' + v % 10; cbuf[bi++] = ':';
-    v = g_sec; if (v >= 10) cbuf[bi++] = '0' + v / 10;
-    cbuf[bi++] = '0' + v % 10; cbuf[bi] = 0;
+    /* Clock */
+    char cbuf[16]; int v, bi = 0;
+    v = g_hour; if (v >= 10) cbuf[bi++] = '0' + v / 10; cbuf[bi++] = '0' + v % 10; cbuf[bi++] = ':';
+    v = g_min; if (v >= 10) cbuf[bi++] = '0' + v / 10; cbuf[bi++] = '0' + v % 10; cbuf[bi++] = ':';
+    v = g_sec; if (v >= 10) cbuf[bi++] = '0' + v / 10; cbuf[bi++] = '0' + v % 10; cbuf[bi] = 0;
     draw_text(70, ROWS - 1, cbuf, ATTR(WHITE, DARKGRAY));
 }
 
@@ -391,77 +371,49 @@ static void draw_window(int idx) {
         draw_text_centered(cx, cy + 2, cw, "A lightweight hobby OS", ATTR(LIGHTGRAY, CONTENT_BG));
         draw_text_centered(cx, cy + 3, cw, "with GUI and PS/2 input", ATTR(LIGHTGRAY, CONTENT_BG));
         draw_text_centered(cx, cy + 5, cw, "Click X to close", ATTR(DARKGRAY, CONTENT_BG));
-    } else if (w->type == WIN_MONITOR) {
-        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
-        draw_text(cx, cy, "System Monitor", ATTR(YELLOW, CONTENT_BG));
-        draw_text(cx, cy + 2, "Kernel: Aether 32-bit x86", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 3, "Display: VGA text 80x25", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 4, "Input: PS/2 keyboard + mouse", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 6, "Open windows:", ATTR(LIGHTCYAN, CONTENT_BG));
-        int wy = cy + 7;
-        for (int i = 0; i < MAX_WINDOWS && wy < cy + ch; i++) {
-            if (wins[i].active) { draw_text(cx + 2, wy, wins[i].title, ATTR(LIGHTGRAY, CONTENT_BG)); wy++; }
-        }
-        if (wy == cy + 7) draw_text(cx + 2, wy, "(none)", ATTR(DARKGRAY, CONTENT_BG));
-    } else if (w->type == WIN_SETTINGS) {
-        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
-        draw_text(cx, cy, "Settings", ATTR(YELLOW, CONTENT_BG));
-        draw_text(cx, cy + 2, "Desktop: Blue background", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 3, "Mouse: PS/2", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 4, "Keyboard: PS/2", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 6, "Terminal: KaelTerm", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 8, "Press Esc to close", ATTR(DARKGRAY, CONTENT_BG));
     } else if (w->type == WIN_CLOCK) {
         fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
         draw_text(cx, cy, "Clock", ATTR(YELLOW, CONTENT_BG));
-        char buf[16];
-        int v = g_hour; int bi = 0;
-        if (v >= 10) buf[bi++] = '0' + v / 10;
+        char buf[16]; int v, bi = 0;
+        v = g_hour; if (v >= 10) buf[bi++] = '0' + v / 10;
         buf[bi++] = '0' + v % 10; buf[bi++] = ':';
         v = g_min; if (v >= 10) buf[bi++] = '0' + v / 10;
         buf[bi++] = '0' + v % 10; buf[bi++] = ':';
         v = g_sec; if (v >= 10) buf[bi++] = '0' + v / 10;
         buf[bi++] = '0' + v % 10; buf[bi] = 0;
         draw_text_centered(cx, cy + 2, cw, buf, ATTR(YELLOW, CONTENT_BG));
-        draw_text_centered(cx, cy + 4, cw, "October 2026", ATTR(LIGHTGRAY, CONTENT_BG));
+        const char* mn[12] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+        char dbuf[24]; kael_strcpy(dbuf, mn[g_month - 1]); kael_strcat(dbuf, " ");
+        char tmp[8]; kael_itoa(g_day, tmp); kael_strcat(dbuf, tmp);
+        kael_strcat(dbuf, " "); kael_itoa(g_year, tmp); kael_strcat(dbuf, tmp);
+        draw_text_centered(cx, cy + 4, cw, dbuf, ATTR(LIGHTGRAY, CONTENT_BG));
     } else if (w->type == WIN_CALENDAR) {
         fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
-        draw_text(cx, cy, "Calendar - October 2026", ATTR(YELLOW, CONTENT_BG));
+        const char* mnames[12] = {"January","February","March","April","May","June","July","August","September","October","November","December"};
+        char title[32]; kael_strcpy(title, "Calendar - "); kael_strcat(title, mnames[g_month - 1]);
+        kael_strcat(title, " "); kael_itoa(g_year, title + kael_strlen(title));
+        draw_text(cx, cy, title, ATTR(YELLOW, CONTENT_BG));
         draw_text(cx, cy + 2, "Mon Tue Wed Thu Fri Sat Sun", ATTR(LIGHTCYAN, CONTENT_BG));
-        draw_text(cx, cy + 4, "              1   2   3   4", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 5, "  5   6   7   8   9  10  11", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 6, " 12  13  14  15  16  17  18", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 7, " 19  20  21  22  23  24  25", ATTR(LIGHTGRAY, CONTENT_BG));
-        draw_text(cx, cy + 8, " 26  27  28  29  30  31", ATTR(LIGHTGRAY, CONTENT_BG));
-    } else if (w->type == WIN_STOPWATCH) {
-        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
-        draw_text(cx, cy, "Stopwatch", ATTR(YELLOW, CONTENT_BG));
-        char buf[16];
-        int v = sw_h; int bi = 0;
-        if (v >= 10) buf[bi++] = '0' + v / 10;
-        buf[bi++] = '0' + v % 10; buf[bi++] = ':';
-        v = sw_m; if (v >= 10) buf[bi++] = '0' + v / 10;
-        buf[bi++] = '0' + v % 10; buf[bi++] = ':';
-        v = sw_s; if (v >= 10) buf[bi++] = '0' + v / 10;
-        buf[bi++] = '0' + v % 10; buf[bi] = 0;
-        draw_text_centered(cx, cy + 2, cw, buf, ATTR(YELLOW, CONTENT_BG));
-        draw_text(cx, cy + 4, sw_running ? "Running..." : "Stopped", ATTR(sw_running ? LIGHTGREEN : DARKGRAY, CONTENT_BG));
-        draw_text(cx, cy + 6, "Space=Start/Stop R=Reset", ATTR(DARKGRAY, CONTENT_BG));
-    } else if (w->type == WIN_PAINT) {
-        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
-        draw_text(cx, cy, "Paint - arrows=move #=draw C=clear", ATTR(YELLOW, CONTENT_BG));
-        for (int r = 0; r < 16 && r < ch - 2; r++)
-            for (int c = 0; c < 48 && c < cw; c++)
-                put_cell(cx + c, cy + 2 + r, w->paint_grid[r][c], ATTR(LIGHTGRAY, CONTENT_BG));
-        put_cell(cx + w->paint_px, cy + 2 + w->paint_py, 0xDB, ATTR(w->paint_color, CONTENT_BG));
-    } else if (w->type == WIN_PASSWORD) {
-        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
-        draw_text(cx, cy, "Password Generator", ATTR(YELLOW, CONTENT_BG));
-        draw_text(cx, cy + 2, "Generated passwords:", ATTR(LIGHTCYAN, CONTENT_BG));
-        draw_text(cx, cy + 4, "aB3$xK9!mN2&", ATTR(LIGHTGREEN, CONTENT_BG));
-        draw_text(cx, cy + 5, "qW7#zR5*pL8@", ATTR(LIGHTGREEN, CONTENT_BG));
-        draw_text(cx, cy + 6, "nF4%hJ6^tY1", ATTR(LIGHTGREEN, CONTENT_BG));
-        draw_text(cx, cy + 8, "Press R to regenerate", ATTR(DARKGRAY, CONTENT_BG));
+        int dim;
+        if (g_month == 2) dim = (g_year % 4 == 0 && g_year % 100 != 0) || g_year % 400 == 0 ? 29 : 28;
+        else if (g_month == 4 || g_month == 6 || g_month == 9 || g_month == 11) dim = 30;
+        else dim = 31;
+        int fd = (g_dow - g_day % 7 + 7) % 7; if (fd == 0) fd = 7;
+        int day = 1;
+        for (int row = 0; row < 6 && day <= dim; row++) {
+            char line[32]; int pos = 0;
+            for (int col = 0; col < 7; col++) {
+                int cd = day - (fd - 1) + col;
+                if (row == 0 && col < fd - 1) { line[pos++]=' ';line[pos++]=' ';line[pos++]=' ';line[pos++]=' '; }
+                else if (cd >= 1 && cd <= dim) {
+                    if (cd == g_day) { line[pos++]='['; if(cd<10)line[pos++]=' '; char db[4];kael_itoa(cd,db);for(int k=0;db[k];k++)line[pos++]=db[k];line[pos++]=']'; }
+                    else { if(cd<10)line[pos++]=' '; char db[4];kael_itoa(cd,db);for(int k=0;db[k];k++)line[pos++]=db[k];line[pos++]=' '; }
+                    line[pos++]=' ';
+                } else { line[pos++]=' ';line[pos++]=' ';line[pos++]=' ';line[pos++]=' '; }
+            }
+            line[pos]=0; draw_text(cx, cy+3+row, line, ATTR(LIGHTGRAY, CONTENT_BG));
+            day = (row == 0) ? fd + (7-fd) + 1 : day + 7;
+        }
     }
 }
 
@@ -519,9 +471,7 @@ static void term_process(window_t* w, const char* cmd) {
         term_add_line(w, "Commands:");
         term_add_line(w, "  ls, cd, cat, echo, clear");
         term_add_line(w, "  ver, fetch, date, cal");
-        term_add_line(w, "  uptime, uname, ps, df");
-        term_add_line(w, "  history, grep, wc, sort");
-        term_add_line(w, "  man, halt");
+        term_add_line(w, "  halt");
     } else if (kael_strcmp(cmd, "ls") == 0) {
         int found = 0;
         for (int i = 0; i < MAX_FS; i++) {
@@ -555,41 +505,38 @@ static void term_process(window_t* w, const char* cmd) {
         term_add_line(w, "user@kael");
     } else if (kael_strcmp(cmd, "clear") == 0) {
         w->line_count = 0;
+    } else if (kael_strcmp(cmd, "date") == 0) {
+        const char* dn[7] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+        const char* mn[12] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+        char dbuf[40]; kael_strcpy(dbuf, dn[g_dow > 0 ? g_dow - 1 : 6]); kael_strcat(dbuf, " ");
+        kael_strcat(dbuf, mn[g_month - 1]); kael_strcat(dbuf, " ");
+        char tmp[8]; kael_itoa(g_day, tmp); kael_strcat(dbuf, tmp);
+        kael_strcat(dbuf, " "); kael_itoa(g_year, tmp); kael_strcat(dbuf, tmp);
+        kael_strcat(dbuf, " "); if (g_hour < 10) kael_strcat(dbuf, "0"); kael_itoa(g_hour, tmp); kael_strcat(dbuf, tmp);
+        kael_strcat(dbuf, ":"); if (g_min < 10) kael_strcat(dbuf, "0"); kael_itoa(g_min, tmp); kael_strcat(dbuf, tmp);
+        kael_strcat(dbuf, ":"); if (g_sec < 10) kael_strcat(dbuf, "0"); kael_itoa(g_sec, tmp); kael_strcat(dbuf, tmp);
+        term_add_line(w, dbuf);
+    } else if (kael_strcmp(cmd, "cal") == 0) {
+        const char* mn[12] = {"January","February","March","April","May","June","July","August","September","October","November","December"};
+        char tbuf[32]; kael_strcpy(tbuf, mn[g_month - 1]); kael_strcat(tbuf, " "); kael_itoa(g_year, tbuf + kael_strlen(tbuf));
+        term_add_line(w, tbuf);
+        term_add_line(w, "Mon Tue Wed Thu Fri Sat Sun");
+        int dim; if (g_month == 2) dim = (g_year % 4 == 0 && g_year % 100 != 0) || g_year % 400 == 0 ? 29 : 28;
+        else if (g_month == 4 || g_month == 6 || g_month == 9 || g_month == 11) dim = 30; else dim = 31;
+        int fd = (g_dow - g_day % 7 + 7) % 7; if (fd == 0) fd = 7;
+        char row[32]; int pos = 0;
+        for (int d = 1; d <= dim; d++) {
+            char db[4]; kael_itoa(d, db);
+            if (d == 1) for (int s = 1; s < fd; s++) { row[pos++]=' ';row[pos++]=' ';row[pos++]=' ';row[pos++]=' '; }
+            for (int k = 0; db[k]; k++) row[pos++] = db[k];
+            row[pos++]=' ';row[pos++]=' ';
+            if ((fd + d - 1) % 7 == 0 || d == dim) { row[pos]=0; term_add_line(w, row); pos = 0; }
+        }
     } else if (kael_strcmp(cmd, "halt") == 0) {
         fill_cells(0, 0, COLS, ROWS, ' ', ATTR(WHITE, BLACK));
         draw_text_centered(0, 12, COLS, "System halted.", ATTR(WHITE, BLACK));
         present();
         while (1) asm volatile("hlt");
-    } else if (kael_strcmp(cmd, "date") == 0) {
-        term_add_line(w, "Mon Oct 5 2026");
-    } else if (kael_strcmp(cmd, "cal") == 0) {
-        term_add_line(w, "October 2026");
-        term_add_line(w, "Mon Tue Wed Thu Fri Sat Sun");
-        term_add_line(w, "              1   2   3   4");
-        term_add_line(w, "  5   6   7   8   9  10  11");
-    } else if (kael_strcmp(cmd, "uptime") == 0) {
-        term_add_line(w, "up 0 days, 0 hours");
-    } else if (kael_strcmp(cmd, "uname") == 0) {
-        term_add_line(w, "Kael OS 2.1 aether x86");
-    } else if (kael_strcmp(cmd, "ps") == 0) {
-        term_add_line(w, "PID  CMD");
-        term_add_line(w, "  1   kernel");
-        term_add_line(w, "  2   desktop");
-    } else if (kael_strcmp(cmd, "df") == 0) {
-        term_add_line(w, "Filesystem  Size  Used  Avail");
-        term_add_line(w, "/dev/sda1    32M    1M    31M");
-    } else if (kael_strcmp(cmd, "history") == 0) {
-        term_add_line(w, "history");
-        term_add_line(w, "fetch");
-    } else if (kael_strcmp(cmd, "grep") == 0) {
-        term_add_line(w, "No matches");
-    } else if (kael_strcmp(cmd, "wc") == 0) {
-        term_add_line(w, "0 0 0");
-    } else if (kael_strcmp(cmd, "sort") == 0) {
-        term_add_line(w, "(sorted output)");
-    } else if (kael_strcmp(cmd, "man") == 0) {
-        term_add_line(w, "Kael OS Manual");
-        term_add_line(w, "Type help for commands");
     } else if (cmd[0] != 0) {
         term_add_line(w, "Unknown command. Try 'help'.");
     }
@@ -707,6 +654,7 @@ static int win_hit(int idx, int mx, int my) {
 void desktop_run(void) {
     vga_disable_blink();
     fs_init();
+    rtc_init();
     /* clear screen */
     fill_cells(0, 0, COLS, ROWS, ' ', ATTR(DESKTOP_BG, DESKTOP_BG));
 
@@ -728,23 +676,7 @@ void desktop_run(void) {
         /* Clock tick */
         static int tick = 0;
         tick++;
-        if (tick >= 200) {
-            tick = 0;
-            g_sec++;
-            if (g_sec >= 60) { g_sec = 0; g_min++; if (g_min >= 60) { g_min = 0; g_hour++; if (g_hour >= 24) g_hour = 0; } }
-            need_redraw = 1;
-        }
-        /* Stopwatch tick */
-        if (sw_running) {
-            static int sw_tick = 0;
-            sw_tick++;
-            if (sw_tick >= 200) {
-                sw_tick = 0;
-                sw_s++;
-                if (sw_s >= 60) { sw_s = 0; sw_m++; if (sw_m >= 60) { sw_m = 0; sw_h++; } }
-                need_redraw = 1;
-            }
-        }
+        if (tick >= 200) { tick = 0; g_sec++; if (g_sec >= 60) { g_sec = 0; g_min++; if (g_min >= 60) { g_min = 0; g_hour++; if (g_hour >= 24) g_hour = 0; } } need_redraw = 1; }
 
         /* Keyboard input */
         if (c) {
@@ -782,22 +714,6 @@ void desktop_run(void) {
                 if (wins[fw].type == WIN_TERMINAL) {
                     term_key(&wins[fw], c);
                     need_redraw = 1;
-                } else if (wins[fw].type == WIN_STOPWATCH) {
-                    if (c == ' ') { sw_running = !sw_running; need_redraw = 1; }
-                    if (c == 'r' || c == 'R') { sw_running = 0; sw_h = sw_m = sw_s = 0; need_redraw = 1; }
-                } else if (wins[fw].type == WIN_PASSWORD) {
-                    if (c == 'r' || c == 'R') need_redraw = 1;
-                } else if (wins[fw].type == WIN_PAINT) {
-                    if (c == 0x13) { /* Left */ if (wins[fw].paint_px > 0) wins[fw].paint_px--; need_redraw = 1; }
-                    else if (c == 0x14) { /* Right */ if (wins[fw].paint_px < 47) wins[fw].paint_px++; need_redraw = 1; }
-                    else if (c == 0x11) { /* Up */ if (wins[fw].paint_py > 0) wins[fw].paint_py--; need_redraw = 1; }
-                    else if (c == 0x12) { /* Down */ if (wins[fw].paint_py < 15) wins[fw].paint_py++; need_redraw = 1; }
-                    else if (c == '#') { wins[fw].paint_grid[wins[fw].paint_py][wins[fw].paint_px] = '#'; need_redraw = 1; }
-                    else if (c == '*' || c == '@' || c == '%') { wins[fw].paint_grid[wins[fw].paint_py][wins[fw].paint_px] = c; need_redraw = 1; }
-                    else if (c == 'c' || c == 'C') {
-                        for (int r = 0; r < 16; r++) for (int cc = 0; cc < 48; cc++) wins[fw].paint_grid[r][cc] = ' ';
-                        need_redraw = 1;
-                    }
                 } else if (c == 'q') {
                     win_close(fw);
                     need_redraw = 1;
