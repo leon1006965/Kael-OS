@@ -2,6 +2,7 @@
 #include "multiboot.h"
 #include "serial.h"
 #include "ata.h"
+#include "mbr.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -100,6 +101,84 @@ static void test_ata(void) {
     serial_puts("=== ATA TEST COMPLETE ===\n\n");
 }
 
+static void test_mbr(void) {
+    serial_puts("\n=== MBR TEST ===\n");
+
+    /* Create a partition layout:
+     * Partition 1: LBA 2048, 65536 sectors (32MB) - FAT32 boot
+     * Partition 2: LBA 67584, rest of disk - FAT32 data
+     */
+    mbr_t mbr;
+    mbr_init_empty(&mbr);
+
+    serial_puts("[MBR] Adding partition 1: LBA 2048, 32MB FAT32...\n");
+    if (mbr_add_partition(&mbr, 2048, 65536, PART_TYPE_FAT32_LBA, 1) != 0) {
+        serial_puts("[MBR] ERROR: Failed to add partition 1\n");
+        return;
+    }
+
+    serial_puts("[MBR] Adding partition 2: LBA 67584, 224MB FAT32...\n");
+    if (mbr_add_partition(&mbr, 67584, 458752, PART_TYPE_FAT32_LBA, 0) != 0) {
+        serial_puts("[MBR] ERROR: Failed to add partition 2\n");
+        return;
+    }
+
+    serial_puts("[MBR] Writing MBR to sector 0...\n");
+    if (mbr_write(0, &mbr) != 0) {
+        serial_puts("[MBR] ERROR: Write failed\n");
+        return;
+    }
+    serial_puts("[MBR] Write OK\n");
+
+    /* Read back and verify */
+    serial_puts("[MBR] Reading back MBR...\n");
+    mbr_t verify;
+    if (mbr_read(0, &verify) != 0) {
+        serial_puts("[MBR] ERROR: Read back failed\n");
+        return;
+    }
+
+    /* Check signature */
+    if (verify.signature != 0xAA55) {
+        serial_puts("[MBR] ERROR: Signature mismatch! Got ");
+        serial_puthex(verify.signature);
+        serial_puts(" expected 0xAA55\n");
+        return;
+    }
+    serial_puts("[MBR] Signature OK (0x55AA)\n");
+
+    /* Check partition 1 */
+    if (verify.partitions[0].lba_first != 2048 ||
+        verify.partitions[0].sector_count != 65536 ||
+        verify.partitions[0].type != PART_TYPE_FAT32_LBA ||
+        verify.partitions[0].status != 0x80) {
+        serial_puts("[MBR] ERROR: Partition 1 mismatch\n");
+        serial_puts("  LBA: ");
+        serial_puthex(verify.partitions[0].lba_first);
+        serial_puts(" Count: ");
+        serial_puthex(verify.partitions[0].sector_count);
+        serial_puts(" Type: ");
+        serial_puthex(verify.partitions[0].type);
+        serial_puts(" Status: ");
+        serial_puthex(verify.partitions[0].status);
+        serial_puts("\n");
+        return;
+    }
+    serial_puts("[MBR] Partition 1 OK: LBA 2048, 65536 sectors, type 0x0C, bootable\n");
+
+    /* Check partition 2 */
+    if (verify.partitions[1].lba_first != 67584 ||
+        verify.partitions[1].sector_count != 458752 ||
+        verify.partitions[1].type != PART_TYPE_FAT32_LBA ||
+        verify.partitions[1].status != 0x00) {
+        serial_puts("[MBR] ERROR: Partition 2 mismatch\n");
+        return;
+    }
+    serial_puts("[MBR] Partition 2 OK: LBA 67584, 458752 sectors, type 0x0C\n");
+
+    serial_puts("=== MBR TEST COMPLETE ===\n\n");
+}
+
 void kernel_main(uint32_t magic, uint32_t info_ptr) {
     asm volatile("cli");
     mb_magic = magic;
@@ -112,6 +191,9 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
 
     /* Run ATA test before anything else */
     test_ata();
+
+    /* Run MBR test */
+    test_mbr();
 
     /* Continue with normal boot */
     serial_puts("[BOOT] Starting normal boot...\n");
