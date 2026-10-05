@@ -3,6 +3,7 @@
 #include "serial.h"
 #include "ata.h"
 #include "mbr.h"
+#include "fat32.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -179,6 +180,52 @@ static void test_mbr(void) {
     serial_puts("=== MBR TEST COMPLETE ===\n\n");
 }
 
+static void test_fat32(void) {
+    serial_puts("\n=== FAT32 TEST ===\n");
+
+    /* Format partition 1 (LBA 2048, 65536 sectors = 32MB) */
+    serial_puts("[FAT32] Formatting partition 1...\n");
+    if (fat32_format(2048, 65536) != 0) {
+        serial_puts("[FAT32] ERROR: Format failed\n");
+        return;
+    }
+
+    /* Read back BPB and verify */
+    serial_puts("[FAT32] Reading back BPB...\n");
+    fat32_bpb_t bpb;
+    if (fat32_read_bpb(2048, &bpb) != 0) {
+        serial_puts("[FAT32] ERROR: Read BPB failed\n");
+        return;
+    }
+
+    serial_puts("[FAT32] Verifying BPB...\n");
+    if (bpb.bytes_per_sec != 512) {
+        serial_puts("[FAT32] ERROR: bytes_per_sec mismatch\n");
+        return;
+    }
+    if (bpb.sec_per_clus != 8) {
+        serial_puts("[FAT32] ERROR: sec_per_clus mismatch\n");
+        return;
+    }
+    if (bpb.num_fats != 2) {
+        serial_puts("[FAT32] ERROR: num_fats mismatch\n");
+        return;
+    }
+    if (bpb.boot_sig2 != 0xAA55) {
+        serial_puts("[FAT32] ERROR: boot signature mismatch\n");
+        return;
+    }
+    if (bpb.fs_type[0] != 'F' || bpb.fs_type[1] != 'A' || bpb.fs_type[2] != 'T') {
+        serial_puts("[FAT32] ERROR: fs_type mismatch\n");
+        return;
+    }
+
+    serial_puts("[FAT32] BPB verification passed!\n");
+    fat32_print_bpb(&bpb);
+
+    serial_puts("=== FAT32 TEST COMPLETE ===\n\n");
+}
+
 void kernel_main(uint32_t magic, uint32_t info_ptr) {
     asm volatile("cli");
     mb_magic = magic;
@@ -194,6 +241,9 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
 
     /* Run MBR test */
     test_mbr();
+
+    /* Run FAT32 test */
+    test_fat32();
 
     /* Continue with normal boot */
     serial_puts("[BOOT] Starting normal boot...\n");
