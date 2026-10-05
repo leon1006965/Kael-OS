@@ -148,7 +148,8 @@ void mouse_poll(void) {
     asm volatile("push %0; popfl" : : "r"(flags) : "memory", "cc");
 }
 
-int mouse_get_x(void) { mouse_poll(); return mouse_x; }
-int mouse_get_y(void) { mouse_poll(); return mouse_y; }
-uint8_t mouse_get_buttons(void) { mouse_poll(); return mouse_buttons; }
+/* Read state directly - IRQ handler updates these via drain() */
+int mouse_get_x(void) { return mouse_x; }
+int mouse_get_y(void) { return mouse_y; }
+uint8_t mouse_get_buttons(void) { return mouse_buttons; }
 int mouse_is_present(void) { return mouse_present; }
