@@ -1,4 +1,6 @@
 #include "types.h"
+#include "installer.h"
+#include "serial.h"
 
 extern void vga_text_clear(uint8_t color);
 extern void vga_text_puts(const char* s, uint8_t color);
@@ -85,6 +87,7 @@ static int starts_with(const char* s, const char* p) {
 #define WIN_FILES 3
 #define WIN_ABOUT 4
 #define WIN_NOTEPAD 5
+#define WIN_INSTALLER 6
 
 /* Notepad format modes */
 #define NP_NORMAL 0
@@ -102,11 +105,11 @@ static int starts_with(const char* s, const char* p) {
 #define FMT_BULLET 0x08
 
 /* Menu items */
-#define MENU_ITEMS 6
+#define MENU_ITEMS 7
 static const char* menu_labels[MENU_ITEMS] = {
-    " Terminal ", " Calculator ", " Notepad ", " File Manager ", " About ", " Exit "
+    " Terminal ", " Calculator ", " Notepad ", " File Manager ", " Installer ", " About ", " Exit "
 };
-static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_CALC, WIN_NOTEPAD, WIN_FILES, WIN_ABOUT, 99 };
+static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_CALC, WIN_NOTEPAD, WIN_FILES, WIN_INSTALLER, WIN_ABOUT, 99 };
 
 /* Window state */
 typedef struct {
@@ -266,6 +269,10 @@ static int win_create(int type) {
                     wins[i].np_mode = NP_NORMAL;
                     for (int j = 0; j < 20; j++) { wins[i].np_lines[j][0] = 0; wins[i].np_fmt[j] = FMT_NORMAL; }
                     break;
+                case WIN_INSTALLER:
+                    wins[i].w = 50; wins[i].h = 14;
+                    kael_strcpy(wins[i].title, "Kael OS Installer");
+                    break;
             }
             for (int j = 0; j < MAX_WINDOWS; j++) if (j != i) wins[j].focused = 0;
             return i;
@@ -415,6 +422,17 @@ static void draw_window(int idx) {
                 }
             }
         }
+    } else if (w->type == WIN_INSTALLER) {
+        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
+        draw_text_centered(cx, cy, cw, "Kael OS Installer", ATTR(YELLOW, CONTENT_BG));
+        draw_text_centered(cx, cy + 1, cw, "Install Kael OS to disk", ATTR(LIGHTGRAY, CONTENT_BG));
+        fill_cells(cx, cy + 3, cw, 1, ' ', ATTR(DARKGRAY, CONTENT_BG));
+        draw_text(cx + 2, cy + 4, "Target: /dev/sda (first disk)", ATTR(LIGHTGRAY, CONTENT_BG));
+        draw_text(cx + 2, cy + 5, "Partition: 32MB FAT32", ATTR(LIGHTGRAY, CONTENT_BG));
+        draw_text(cx + 2, cy + 6, "Files: Kernel + System", ATTR(LIGHTGRAY, CONTENT_BG));
+        fill_cells(cx, cy + 8, cw, 1, ' ', ATTR(DARKGRAY, CONTENT_BG));
+        draw_text(cx + 2, cy + 9, "Click Install to begin", ATTR(LIGHTGREEN, CONTENT_BG));
+        draw_text(cx + 2, cy + 10, "(Run from live USB only)", ATTR(DARKGRAY, CONTENT_BG));
     }
 }
 
@@ -805,6 +823,14 @@ void desktop_run(void) {
                         /* calculator button clicks */
                         if (wins[hit].type == WIN_CALC) {
                             calc_click(&wins[hit], mx, my);
+                        }
+                        /* installer click - run install */
+                        if (wins[hit].type == WIN_INSTALLER) {
+                            /* Only run if in the content area (not on title/close) */
+                            if (hit_type == 1) {
+                                serial_puts("[INSTALL] Installer window clicked, running install...\n");
+                                installer_run(0); /* LBA 0 = first disk */
+                            }
                         }
                         need_redraw = 1;
                     }

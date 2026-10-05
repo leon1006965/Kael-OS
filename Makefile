@@ -14,7 +14,8 @@ ASFLAGS = -f elf32
 FLOPPY_IMG = kael.img
 ISO_IMG = kael.iso
 C_SRCS = kernel/kernel.c kernel/keyboard.c kernel/vga.c kernel/font.c \
-         kernel/mouse.c kernel/desktop.c kernel/ata.c kernel/serial.c kernel/mbr.c kernel/fat32.c
+         kernel/mouse.c kernel/desktop.c kernel/ata.c kernel/serial.c kernel/mbr.c \
+         kernel/fat32.c kernel/installer.c
 ASM_SRCS = kernel/entry.asm kernel/idt.asm
 C_OBJS = $(C_SRCS:.c=.o)
 ASM_OBJS = $(ASM_SRCS:.asm=.o)

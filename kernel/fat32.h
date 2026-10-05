@@ -77,4 +77,18 @@ int fat32_format(uint32_t part_lba, uint32_t part_sectors);
 int fat32_read_bpb(uint32_t part_lba, fat32_bpb_t* bpb);
 void fat32_print_bpb(const fat32_bpb_t* bpb);
 
+/* File operations */
+typedef struct {
+    fat32_bpb_t bpb;
+    uint32_t part_lba;
+    uint32_t fat_lba;
+    uint32_t root_lba;
+    uint32_t data_lba;
+} fat32_fs_t;
+
+int fat32_mount(uint32_t part_lba, fat32_fs_t* fs);
+int fat32_read_file(fat32_fs_t* fs, const char* name, uint8_t* buf, uint32_t max_size, uint32_t* size_out);
+int fat32_write_file(fat32_fs_t* fs, const char* name, const uint8_t* buf, uint32_t size);
+int fat32_find_file(fat32_fs_t* fs, const char* name, fat32_dirent_t* dirent_out);
+
 #endif

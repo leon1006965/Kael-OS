@@ -4,6 +4,7 @@
 #include "ata.h"
 #include "mbr.h"
 #include "fat32.h"
+#include "installer.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -20,6 +21,15 @@ extern int mouse_init(void);
 
 uint32_t mb_magic;
 uint32_t mb_info_ptr;
+
+static int mem_cmp(const void* a, const void* b, uint32_t n) {
+    const uint8_t* pa = a;
+    const uint8_t* pb = b;
+    for (uint32_t i = 0; i < n; i++) {
+        if (pa[i] != pb[i]) return pa[i] - pb[i];
+    }
+    return 0;
+}
 
 static void test_ata(void) {
     serial_puts("\n=== ATA TEST ===\n");
@@ -226,6 +236,52 @@ static void test_fat32(void) {
     serial_puts("=== FAT32 TEST COMPLETE ===\n\n");
 }
 
+static void test_fat32_files(void) {
+    serial_puts("\n=== FAT32 FILE TEST ===\n");
+
+    /* Mount the filesystem */
+    fat32_fs_t fs;
+    if (fat32_mount(2048, &fs) != 0) {
+        serial_puts("[FS] ERROR: Mount failed\n");
+        return;
+    }
+    serial_puts("[FS] Filesystem mounted\n");
+
+    /* Write a test file */
+    serial_puts("[FS] Writing test.txt...\n");
+    const char* test_data = "Hello from Kael OS! This is a test file.";
+    if (fat32_write_file(&fs, "TEST.TXT", (const uint8_t*)test_data, 40) != 0) {
+        serial_puts("[FS] ERROR: Write failed\n");
+        return;
+    }
+    serial_puts("[FS] Write OK\n");
+
+    /* Read it back */
+    serial_puts("[FS] Reading TEST.TXT...\n");
+    uint8_t read_buf[256];
+    uint32_t read_size = 0;
+    if (fat32_read_file(&fs, "TEST.TXT", read_buf, 256, &read_size) != 0) {
+        serial_puts("[FS] ERROR: Read failed\n");
+        return;
+    }
+    serial_puts("[FS] Read ");
+    serial_putdec(read_size);
+    serial_puts(" bytes: ");
+    for (uint32_t i = 0; i < read_size; i++) {
+        if (read_buf[i] >= 32 && read_buf[i] < 127) serial_putc(read_buf[i]);
+    }
+    serial_puts("\n");
+
+    /* Verify content */
+    if (read_size == 40 && mem_cmp(read_buf, test_data, 40) == 0) {
+        serial_puts("[FS] Content verified OK!\n");
+    } else {
+        serial_puts("[FS] ERROR: Content mismatch\n");
+    }
+
+    serial_puts("=== FAT32 FILE TEST COMPLETE ===\n\n");
+}
+
 void kernel_main(uint32_t magic, uint32_t info_ptr) {
     asm volatile("cli");
     mb_magic = magic;
@@ -244,6 +300,18 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
 
     /* Run FAT32 test */
     test_fat32();
+
+    /* Run FAT32 file test */
+    test_fat32_files();
+
+    /* Run full installer test */
+    serial_puts("\n=== INSTALLER TEST ===\n");
+    serial_puts("[INSTALL] Running installer on target disk...\n");
+    if (installer_run(0) == 0) {
+        serial_puts("[INSTALL] Install completed successfully!\n");
+    } else {
+        serial_puts("[INSTALL] Install failed\n");
+    }
 
     /* Continue with normal boot */
     serial_puts("[BOOT] Starting normal boot...\n");
