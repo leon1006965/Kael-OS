@@ -673,10 +673,29 @@ void desktop_run(void) {
         int released = !(btns & 1) && (last_buttons & 1);
         int need_redraw = 0;
 
-        /* Clock tick */
-        static int tick = 0;
-        tick++;
-        if (tick >= 200) { tick = 0; g_sec++; if (g_sec >= 60) { g_sec = 0; g_min++; if (g_min >= 60) { g_min = 0; g_hour++; if (g_hour >= 24) g_hour = 0; } } need_redraw = 1; }
+        /* Read CMOS RTC every iteration - it's cheap */
+        g_sec = bcd2bin(cmos_read(0x00));
+        g_min = bcd2bin(cmos_read(0x02));
+        uint8_t h = cmos_read(0x04);
+        g_hour = bcd2bin(h);
+        uint8_t sb = cmos_read(0x0B);
+        if (!(sb & 0x02)) {
+            int pm = (h & 0x80) != 0;
+            g_hour = g_hour & 0x7F;
+            if (pm && g_hour != 12) g_hour += 12;
+            if (!pm && g_hour == 12) g_hour = 0;
+        }
+        g_dow = bcd2bin(cmos_read(0x06));
+        g_day = bcd2bin(cmos_read(0x07));
+        g_month = bcd2bin(cmos_read(0x08));
+        g_year = 2000 + bcd2bin(cmos_read(0x09));
+
+        /* Redraw when second changes or UI changed */
+        static int last_sec = -1;
+        if (g_sec != last_sec || need_redraw || moved || btns != last_buttons) {
+            last_sec = g_sec;
+            need_redraw = 1;
+        }
 
         /* Keyboard input */
         if (c) {
@@ -796,9 +815,8 @@ void desktop_run(void) {
             }
         }
 
-        /* Redraw when UI changed, mouse moved, or buttons changed */
-        if (need_redraw || moved || btns != last_buttons)
-            redraw();
+        /* Redraw */
+        redraw();
 
         last_mx = mx;
         last_my = my;
