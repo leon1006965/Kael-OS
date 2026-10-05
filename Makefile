@@ -5,14 +5,16 @@ LD = ld
 
 CFLAGS = -m32 -ffreestanding -nostdlib -nostdinc -I kernel -fno-builtin \
          -fno-stack-protector -nostartfiles -nodefaultlibs \
-         -fno-pic -fno-pie -mno-red-zone -Wall -Wextra -O2 -c
+         -fno-pic -fno-pie -mno-red-zone \
+         -mno-sse -mno-sse2 -mno-mmx -mno-3dnow \
+         -mgeneral-regs-only \
+         -Wall -Wextra -O2 -c
 ASFLAGS = -f elf32
 
 FLOPPY_IMG = kael.img
 ISO_IMG = kael.iso
 C_SRCS = kernel/kernel.c kernel/keyboard.c kernel/vga.c kernel/font.c \
-         kernel/mouse.c kernel/desktop.c kernel/prog_cube.c kernel/prog_notepad.c \
-         kernel/prog_fm.c kernel/prog_calc.c
+         kernel/mouse.c kernel/desktop.c
 ASM_SRCS = kernel/entry.asm kernel/idt.asm
 C_OBJS = $(C_SRCS:.c=.o)
 ASM_OBJS = $(ASM_SRCS:.asm=.o)

@@ -1,3 +1,6 @@
 *.o
 *.bin
-*.o\n*.elf\n*.bin\n*.iso\n*.img\niso/
+*.elf
+*.img
+*.iso
+iso/
