@@ -152,3 +152,15 @@ int mouse_get_x(void) { return mouse_x; }
 int mouse_get_y(void) { return mouse_y; }
 uint8_t mouse_get_buttons(void) { return mouse_buttons; }
 int mouse_is_present(void) { return mouse_present; }
+int mouse_get_pixel_x(void) {
+    int x = mouse_x * 8 + acc_x;
+    if (x < 0) x = 0;
+    if (x > 639) x = 639;
+    return x;
+}
+int mouse_get_pixel_y(void) {
+    int y = mouse_y * 16 + acc_y;
+    if (y < 0) y = 0;
+    if (y > 399) y = 399;
+    return y;
+}

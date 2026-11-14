@@ -15,7 +15,9 @@ extern void keyboard_init(void);
 extern int mouse_init(void);
 extern void pit_init(void);
 extern void serial_init(void);
+extern void serial_puts(const char* s);
 extern void net_init(void);
+extern int vga_graphics_init(void);
 
 uint32_t mb_magic;
 uint32_t mb_info_ptr;
@@ -24,6 +26,8 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
     asm volatile("cli");
     mb_magic = magic;
     mb_info_ptr = info_ptr;
+    /* GRUB has not run the real-mode VBE probe in boot.asm. */
+    if (magic == MB_MAGIC) *(volatile uint8_t*)0x5FF0 = 0;
 
     idt_install();
     pit_init();
@@ -46,6 +50,10 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
 
     sti_enable();
     serial_init();
+    if (vga_graphics_init())
+        serial_puts("[vga] VBE framebuffer active\n");
+    else
+        serial_puts("[vga] text-mode fallback\n");
     net_init();
     desktop_run();
     while (1) { asm volatile("hlt"); }

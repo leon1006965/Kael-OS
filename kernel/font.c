@@ -100,6 +100,12 @@ static const uint8_t font_8x8[][8] = {
     {0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00},
 };
 
+uint8_t font_get_row(char c, int row) {
+    int idx = (int)(unsigned char)c - 32;
+    if (row < 0 || row >= 8 || idx < 0 || idx >= 95) return 0;
+    return font_8x8[idx][row];
+}
+
 void font_draw_char(int x, int y, char c, uint8_t color) {
     int idx = (int)c - 32;
     if (idx < 0 || idx > 94) return;

@@ -23,6 +23,11 @@ static const net_nic_ops_t sky2_ops = {
     "Marvell Yukon-2 (sky2)", sky2_send, sky2_receive, sky2_mac
 };
 static const net_nic_ops_t* active_nic = 0;
+static void (*net_poll_hook)(void) = 0;
+
+void net_set_poll_hook(void (*hook)(void)) {
+    net_poll_hook = hook;
+}
 
 const char* net_nic_name(void) {
     return active_nic ? active_nic->name : 0;
@@ -177,6 +182,7 @@ static int arp_resolve(uint32_t ip, uint8_t mac[6]) {
             arp_send_req(ip); last = get_ticks();
         }
         net_poll();
+        if (net_poll_hook) net_poll_hook();
         net_idle_halt();
     }
     arp_busy = 0;
@@ -400,6 +406,7 @@ int net_dhcp(char* err) {
             if (interval < 4000) interval *= 2;
         }
         net_poll();
+        if (net_poll_hook) net_poll_hook();
         net_idle_halt();
         if (dhcp_got_nak) { kstrcpy(err, "DHCP NAK from server"); return -1; }
         if (dhcp_got_ack) {

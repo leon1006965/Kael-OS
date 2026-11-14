@@ -9,11 +9,17 @@ extern char kbd_getchar(void);
 extern int kbd_tab_held(void);
 extern int mouse_get_x(void);
 extern int mouse_get_y(void);
+extern int mouse_get_pixel_x(void);
+extern int mouse_get_pixel_y(void);
 extern uint8_t mouse_get_buttons(void);
+extern int vga_graphics_active(void);
+extern void vga_graphics_present(const uint16_t* cells);
+extern void vga_graphics_cursor(const uint16_t* cells, int x, int y, int pressed);
 
 /* networking (net.c / tcp.c / http.c / pci.c) */
 extern void net_poll(void);
 extern void net_shutdown(void);
+extern void net_set_poll_hook(void (*hook)(void));
 extern int acpi_poweroff(void);
 extern int net_parse_ip(const char* s, uint32_t* ip);
 extern void net_ip_str(uint32_t ip, char* out);
@@ -36,6 +42,10 @@ extern int http_fetch(const char* url, char* out, uint32_t cap, uint32_t* out_le
 extern int html_to_lines(const char* html, char lines[][76], int max_lines, int* count,
                          char* title, int title_cap);
 extern int pci_list_nics(char lines[][72], int max);
+extern int cmini_run(const char* source, char lines[][72], int max_lines,
+                     int* count, char* err, int errcap);
+extern int cmini_feed_input(const char* input, char* err, int errcap);
+extern int cmini_feed_input(const char* input, char* err, int errcap);
 
 static void kael_itoa(int v, char* b) {
     if (v < 0) { *b++ = '-'; v = -v; }
@@ -97,10 +107,10 @@ static int starts_with(const char* s, const char* p) {
 
 #define ATTR(fg, bg) ((uint8_t)(((bg) << 4) | (fg)))
 
-#define DESKTOP_BG BLUE
+#define DESKTOP_BG CYAN
 #define TITLE_FG LIGHTGRAY
-#define TITLE_BG LIGHTBLUE
-#define TITLE_BG_FOCUS LIGHTMAGENTA
+#define TITLE_BG LIGHTGRAY
+#define TITLE_BG_FOCUS BLUE
 #define BTN_FG WHITE
 #define BTN_BG DARKGRAY
 #define CLOSE_FG WHITE
@@ -123,6 +133,8 @@ static int starts_with(const char* s, const char* p) {
 #define WIN_CALENDAR 6
 #define WIN_BROWSER 7
 #define WIN_ETHERNET 8
+#define WIN_CEDITOR 9
+#define WIN_COUTPUT 10
 
 /* CMOS Real-Time Clock */
 static inline void outb(uint16_t p, uint8_t v) { asm volatile("outb %0,%1" : : "a"(v), "Nd"(p)); }
@@ -150,11 +162,11 @@ static void rtc_init(void) {
 }
 
 /* Menu items */
-#define MENU_ITEMS 6
+#define MENU_ITEMS 7
 static const char* menu_labels[MENU_ITEMS] = {
-    " Terminal ", " Browser ", " Calculator ", " Clock ", " Calendar ", " Power Off "
+    " Terminal ", " Browser ", " C Editor ", " Calculator ", " Clock ", " Calendar ", " Power Off "
 };
-static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_BROWSER, WIN_CALC, WIN_CLOCK, WIN_CALENDAR, 99 };
+static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_BROWSER, WIN_CEDITOR, WIN_CALC, WIN_CLOCK, WIN_CALENDAR, 99 };
 
 /* Window state */
 typedef struct {
@@ -180,6 +192,7 @@ typedef struct {
     int eth_state;
     int eth_more;
     char eth_error[64];
+    int c_waiting;
 } window_t;
 
 #define MAX_WINDOWS 6
@@ -199,6 +212,21 @@ static int page_line_count = 0;
 static int page_scroll = 0;
 static char page_title[32];
 static char page_url[64];
+
+#define C_SOURCE_CAP 2048
+static char c_source[C_SOURCE_CAP] =
+    "#include <stdio.h>\n"
+    "#include <string.h>\n"
+    "int main() {\n"
+    "    char name[32];\n"
+    "    printf(\"Your name? \" );\n"
+    "    scanf(\"%s\", name);\n"
+    "    printf(\"Hello, %s!\\n\", name);\n"
+    "    return 0;\n"
+    "}\n";
+static uint32_t c_source_len = sizeof(c_source) - 1;
+static uint32_t c_source_cursor = sizeof(c_source) - 1;
+static int c_source_scroll;
 
 /* Terminal filesystem */
 typedef struct {
@@ -235,12 +263,17 @@ static void put_cell(int x, int y, char c, uint8_t attr) {
 }
 
 static void present(void) {
+    if (vga_graphics_active()) {
+        vga_graphics_present(back);
+        return;
+    }
     for (int i = 0; i < COLS * ROWS; i++) {
         if (back[i] != shown[i]) { VGA[i] = back[i]; shown[i] = back[i]; }
     }
 }
 
 static void vga_disable_blink(void) {
+    if (vga_graphics_active()) return;
     inb(0x3DA);
     outb(0x3C0, 0x30);
     uint8_t m = inb(0x3C1);
@@ -287,6 +320,7 @@ static int win_create(int type) {
             wins[i].display[0] = 0; wins[i].acc = 0; wins[i].pending = 0;
             wins[i].op = 0; wins[i].new_num = 1; wins[i].error = 0;
             wins[i].eth_state = 0; wins[i].eth_more = 0; wins[i].eth_error[0] = 0;
+            wins[i].c_waiting = 0;
             switch (type) {
                 case WIN_TERMINAL:
                     wins[i].w = 50; wins[i].h = 14;
@@ -326,6 +360,16 @@ static int win_create(int type) {
                     wins[i].w = 50; wins[i].h = 12;
                     kael_strcpy(wins[i].title, "Ethernet");
                     break;
+                case WIN_CEDITOR:
+                    wins[i].x = 2; wins[i].y = 1;
+                    wins[i].w = 76; wins[i].h = 22;
+                    kael_strcpy(wins[i].title, "C Editor");
+                    break;
+                case WIN_COUTPUT:
+                    wins[i].x = 10; wins[i].y = 4;
+                    wins[i].w = 60; wins[i].h = 18;
+                    kael_strcpy(wins[i].title, "Program Output");
+                    break;
             }
             for (int j = 0; j < MAX_WINDOWS; j++) if (j != i) wins[j].focused = 0;
             return i;
@@ -355,11 +399,30 @@ static void draw_desktop(void) {
     draw_text(70, ROWS - 1, cbuf, ATTR(WHITE, DARKGRAY));
 }
 
+static void draw_bevel(int x, int y, int w, int h, int pressed) {
+    uint8_t hi = pressed ? ATTR(DARKGRAY, LIGHTGRAY) : ATTR(WHITE, LIGHTGRAY);
+    uint8_t lo = pressed ? ATTR(WHITE, LIGHTGRAY) : ATTR(DARKGRAY, LIGHTGRAY);
+    fill_cells(x, y, w, h, ' ', ATTR(BLACK, LIGHTGRAY));
+    if (h == 1) {
+        put_cell(x, y, 0xDB, hi);
+        put_cell(x + w - 1, y, 0xDB, lo);
+        return;
+    }
+    for (int i = 0; i < w; i++) {
+        put_cell(x + i, y, (i == 0 || i == w - 1) ? '+' : '-', hi);
+        put_cell(x + i, y + h - 1, (i == 0 || i == w - 1) ? '+' : '-', lo);
+    }
+    for (int j = 1; j < h - 1; j++) {
+        put_cell(x, y + j, '|', hi);
+        put_cell(x + w - 1, y + j, '|', lo);
+    }
+}
+
 /* Draw window frame + content */
 static void draw_window(int idx) {
     window_t* w = &wins[idx];
     uint8_t tb_bg = w->focused ? TITLE_BG_FOCUS : TITLE_BG;
-    uint8_t tb_fg = w->focused ? WHITE : LIGHTGRAY;
+    uint8_t tb_fg = w->focused ? WHITE : DARKGRAY;
     int x = w->x, y = w->y, ww = w->w, hh = w->h;
     /* border */
     fill_cells(x, y, ww, hh, ' ', ATTR(BORDER_FG, CONTENT_BG));
@@ -493,6 +556,58 @@ static void draw_window(int idx) {
             if (page_scroll > 0)
                 draw_text(cx, cy + ch - 1, "[up]", ATTR(DARKGRAY, CONTENT_BG));
         }
+    } else if (w->type == WIN_CEDITOR) {
+        fill_cells(cx, cy, cw, ch, ' ', ATTR(BLACK, WHITE));
+        draw_text(cx + 1, cy, "Kael C Studio - stdio.h + strings", ATTR(DARKGRAY, WHITE));
+        draw_bevel(cx + cw - 10, cy, 9, 1, 0);
+        draw_text(cx + cw - 8, cy, "Run", ATTR(BLACK, LIGHTGRAY));
+
+        uint32_t pos = 0;
+        int current_line = 0, current_col = 0;
+        for (; pos < c_source_cursor && pos < c_source_len; pos++) {
+            if (c_source[pos] == '\n') { current_line++; current_col = 0; }
+            else current_col++;
+        }
+        int rows = ch - 2;
+        if (current_line < c_source_scroll) c_source_scroll = current_line;
+        if (current_line >= c_source_scroll + rows)
+            c_source_scroll = current_line - rows + 1;
+        uint32_t line_start = 0;
+        int line_no = 0;
+        while (line_no < c_source_scroll && line_start < c_source_len) {
+            if (c_source[line_start++] == '\n') line_no++;
+        }
+        for (int row = 0; row < rows && line_start <= c_source_len; row++) {
+            char number[8], text[68];
+            kael_itoa(c_source_scroll + row + 1, number);
+            draw_text(cx + 1, cy + 1 + row, number, ATTR(BLUE, WHITE));
+            int len = 0;
+            uint32_t p = line_start;
+            while (p < c_source_len && c_source[p] != '\n' && len < 65)
+                text[len++] = c_source[p++];
+            text[len] = 0;
+            draw_text(cx + 5, cy + 1 + row, text, ATTR(BLACK, WHITE));
+            if (c_source_scroll + row == current_line && current_col < 65)
+                put_cell(cx + 5 + current_col, cy + 1 + row, '_', ATTR(BLACK, WHITE));
+            line_start = p;
+            if (line_start < c_source_len && c_source[line_start] == '\n') line_start++;
+            else if (line_start >= c_source_len) break;
+        }
+        draw_text(cx + 1, cy + ch - 1, "stdio.h: printf, puts, scanf, strings, integers", ATTR(DARKGRAY, WHITE));
+    } else if (w->type == WIN_COUTPUT) {
+        fill_cells(cx, cy, cw, ch, ' ', ATTR(BLACK, WHITE));
+        int max_lines = ch - 1;
+        int start = w->line_count > max_lines ? w->line_count - max_lines : 0;
+        for (int i = 0; i < max_lines && start + i < w->line_count; i++)
+            draw_text(cx + 1, cy + i, w->lines[start + i], ATTR(BLACK, WHITE));
+        if (w->c_waiting) {
+            const char* prompt = "stdin> ";
+            draw_text(cx + 1, cy + ch - 1, prompt, ATTR(BLUE, WHITE));
+            draw_text(cx + 1 + kael_strlen(prompt), cy + ch - 1, w->input, ATTR(BLACK, WHITE));
+            put_cell(cx + 1 + kael_strlen(prompt) + w->input_pos, cy + ch - 1, '_', ATTR(BLACK, WHITE));
+        } else {
+            draw_text(cx + 1, cy + ch - 1, "Program finished - close this window when ready.", ATTR(DARKGRAY, WHITE));
+        }
     } else if (w->type == WIN_ETHERNET) {
         fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
         if (w->eth_state == 0) {
@@ -580,12 +695,18 @@ static void draw_menu(void) {
     }
 }
 
-/* Draw mouse cursor (reverse video block) */
+/* Text-mode fallback cursor; graphics mode draws a pixel arrow in vga.c. */
 static void draw_cursor(int mx, int my) {
-    if (mx >= 0 && mx < COLS && my >= 0 && my < ROWS) {
-        uint8_t attr = (mouse_get_buttons() & 1) ? ATTR(BLACK, LIGHTRED) : ATTR(BLACK, WHITE);
-        put_cell(mx, my, 0xDB, attr);
-    }
+    static const uint8_t arrow[5][4] = {
+        {1,0,0,0}, {1,1,0,0}, {1,2,1,0}, {1,2,2,1}, {1,1,0,1}
+    };
+    for (int y = 0; y < 5; y++)
+        for (int x = 0; x < 4; x++)
+            if (arrow[y][x] && mx + x < COLS && my + y < ROWS) {
+                uint8_t fg = arrow[y][x] == 1 ? BLACK : WHITE;
+                if ((mouse_get_buttons() & 1) && arrow[y][x] == 2) fg = YELLOW;
+                put_cell(mx + x, my + y, 0xDB, ATTR(fg, fg));
+            }
 }
 
 /* Full redraw */
@@ -594,8 +715,14 @@ static void redraw(void) {
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (wins[i].active) draw_window(i);
     draw_menu();
-    draw_cursor(mouse_get_x(), mouse_get_y());
-    present();
+    if (vga_graphics_active()) {
+        present();
+        vga_graphics_cursor(back, mouse_get_pixel_x(), mouse_get_pixel_y(),
+                            (mouse_get_buttons() & 1) != 0);
+    } else {
+        draw_cursor(mouse_get_x(), mouse_get_y());
+        present();
+    }
 }
 
 /* Terminal command processing */
@@ -609,6 +736,136 @@ static void term_add_line(window_t* w, const char* text) {
     while (text[i] && i < 71) { w->lines[w->line_count][i] = text[i]; i++; }
     w->lines[w->line_count][i] = 0;
     w->line_count++;
+}
+
+static uint32_t source_line_start(int wanted) {
+    uint32_t p = 0;
+    int line = 0;
+    while (line < wanted && p < c_source_len)
+        if (c_source[p++] == '\n') line++;
+    return p;
+}
+
+static uint32_t source_line_end(uint32_t p) {
+    while (p < c_source_len && c_source[p] != '\n') p++;
+    return p;
+}
+
+static void source_location(uint32_t pos, int* line, int* column) {
+    *line = *column = 0;
+    if (pos > c_source_len) pos = c_source_len;
+    for (uint32_t i = 0; i < pos; i++) {
+        if (c_source[i] == '\n') { (*line)++; *column = 0; }
+        else (*column)++;
+    }
+}
+
+static void source_insert(char c) {
+    if (c_source_len + 1 >= C_SOURCE_CAP) return;
+    for (uint32_t i = c_source_len + 1; i > c_source_cursor; i--)
+        c_source[i] = c_source[i - 1];
+    c_source[c_source_cursor++] = c;
+    c_source_len++;
+}
+
+static void editor_key(char c) {
+    if (c == 0x13) { if (c_source_cursor) c_source_cursor--; return; } /* left */
+    if (c == 0x14) { if (c_source_cursor < c_source_len) c_source_cursor++; return; } /* right */
+    if (c == 0x11 || c == 0x12) {
+        int line, column;
+        source_location(c_source_cursor, &line, &column);
+        if (c == 0x11 && line > 0) line--;
+        if (c == 0x12) line++;
+        uint32_t start = source_line_start(line);
+        uint32_t end = source_line_end(start);
+        c_source_cursor = start + (uint32_t)column;
+        if (c_source_cursor > end) c_source_cursor = end;
+        return;
+    }
+    if (c == 8) {
+        if (c_source_cursor) {
+            for (uint32_t i = c_source_cursor - 1; i < c_source_len; i++)
+                c_source[i] = c_source[i + 1];
+            c_source_cursor--; c_source_len--;
+        }
+        return;
+    }
+    if (c == '\r' || c == '\n') { source_insert('\n'); return; }
+    if (c == '\t') { for (int i = 0; i < 4; i++) source_insert(' '); return; }
+    if (c >= 32 && c < 127) source_insert(c);
+}
+
+static void editor_place_cursor(window_t* w, int mx, int my) {
+    int code_y = w->y + 2; /* first source row below title and Run toolbar */
+    if (my < code_y) return;
+    int line = c_source_scroll + my - code_y;
+    uint32_t start = source_line_start(line);
+    uint32_t end = source_line_end(start);
+    int column = mx - (w->x + 6);
+    if (column < 0) column = 0;
+    uint32_t next = start + (uint32_t)column;
+    c_source_cursor = next < end ? next : end;
+}
+
+static int editor_run_clicked(const window_t* w, int mx, int my) {
+    /* Hit a generous toolbar area around the visible Run button. */
+    return (my == w->y + 1 || my == w->y + 2) &&
+           mx >= w->x + w->w - 16 && mx < w->x + w->w - 2;
+}
+
+static void run_c_program(void) {
+    int idx = win_create(WIN_COUTPUT);
+    if (idx < 0) return;
+    window_t* out = &wins[idx];
+    out->line_count = 0;
+    out->c_waiting = 0;
+    char err[64];
+    int rc = cmini_run(c_source, out->lines, 23, &out->line_count, err, sizeof err);
+    if (rc < 0) {
+        if (err[0]) {
+            char line[72];
+            kael_strcpy(line, "Error during compiling: "); kael_strcat(line, err);
+            term_add_line(out, line);
+        }
+        term_add_line(out, "Program finished. Close this window when ready.");
+    } else if (rc == 1) {
+        out->c_waiting = 1;
+    } else {
+        term_add_line(out, "");
+        term_add_line(out, "Program finished. Close this window when ready.");
+    }
+}
+
+static void coutput_key(window_t* w, char c) {
+    if (!w->c_waiting) return;
+    if (c == '\r' || c == '\n') {
+        w->input[w->input_pos] = 0;
+        char err[64];
+        int rc = cmini_feed_input(w->input, err, sizeof err);
+        w->input_pos = 0;
+        w->input[0] = 0;
+        if (rc == 1) {
+            w->c_waiting = 1;
+        } else if (rc < 0) {
+            w->c_waiting = 0;
+            char line[72];
+            kael_strcpy(line, "Error during compiling: "); kael_strcat(line, err);
+            term_add_line(w, line);
+            term_add_line(w, "Program finished. Close this window when ready.");
+        } else {
+            w->c_waiting = 0;
+            term_add_line(w, "");
+            term_add_line(w, "Program finished. Close this window when ready.");
+        }
+    } else if (c == 8) {
+        if (w->input_pos > 0) {
+            w->input_pos--;
+            w->input[w->input_pos] = 0;
+        }
+    } else if (c >= 32 && c < 127 && w->input_pos < 60) {
+        w->input[w->input_pos++] = c;
+        w->input[w->input_pos] = 0;
+    }
 }
 
 static const char* next_tok(const char* p, char* out, int cap) {
@@ -734,6 +991,17 @@ static void netinfo_cmd(window_t* w) {
     }
 }
 
+static void ethernet_startup_poll(void) {
+    static int old_x = -1, old_y = -1;
+    static uint8_t old_buttons = 0xFF;
+    int x = mouse_get_pixel_x(), y = mouse_get_pixel_y();
+    uint8_t buttons = mouse_get_buttons();
+    if (x != old_x || y != old_y || buttons != old_buttons) {
+        old_x = x; old_y = y; old_buttons = buttons;
+        redraw();
+    }
+}
+
 static void ethernet_startup(void) {
     int idx = win_create(WIN_ETHERNET);
     if (idx < 0) return;
@@ -753,7 +1021,10 @@ static void ethernet_startup(void) {
     w->eth_state = 0;
     redraw();
     char err[64];
-    if (g_have_ip || net_dhcp(err) == 0) {
+    net_set_poll_hook(ethernet_startup_poll);
+    int dhcp_rc = g_have_ip ? 0 : net_dhcp(err);
+    net_set_poll_hook(0);
+    if (dhcp_rc == 0) {
         w->eth_state = 1;
         w->eth_error[0] = 0;
     } else {
@@ -872,9 +1143,12 @@ static void term_process(window_t* w, const char* cmd) {
         term_add_line(w, "  dhcp, ipconfig, netinfo");
         term_add_line(w, "  ping <ip/host>");
         term_add_line(w, "  browse <url>");
+        term_add_line(w, "  cedit (C subset editor)");
         term_add_line(w, "  halt");
     } else if (kael_strcmp(cmd, "netinfo") == 0) {
         netinfo_cmd(w);
+    } else if (kael_strcmp(cmd, "cedit") == 0) {
+        win_create(WIN_CEDITOR);
     } else if (kael_strcmp(cmd, "ls") == 0) {
         int found = 0;
         for (int i = 0; i < MAX_FS; i++) {
@@ -1235,6 +1509,13 @@ void desktop_run(void) {
                         page_scroll = page_line_count - vis;
                     if (page_scroll < 0) page_scroll = 0;
                     need_redraw = 1;
+                } else if (wins[fw].type == WIN_CEDITOR) {
+                    if (c == 0x15) run_c_program(); /* F5 */
+                    else editor_key(c);
+                    need_redraw = 1;
+                } else if (wins[fw].type == WIN_COUTPUT && wins[fw].c_waiting) {
+                    coutput_key(&wins[fw], c);
+                    need_redraw = 1;
                 } else if (wins[fw].type == WIN_ETHERNET &&
                            (c == 'm' || c == 'M' || c == '\n' || c == '\r')) {
                     wins[fw].eth_more = !wins[fw].eth_more;
@@ -1292,6 +1573,10 @@ void desktop_run(void) {
                         /* calculator button clicks */
                         if (wins[hit].type == WIN_CALC) {
                             calc_click(&wins[hit], mx, my);
+                        }
+                        if (wins[hit].type == WIN_CEDITOR && hit_type == 1) {
+                            if (editor_run_clicked(&wins[hit], mx, my)) run_c_program();
+                            else editor_place_cursor(&wins[hit], mx, my);
                         }
                         if (wins[hit].type == WIN_ETHERNET &&
                             hit_type == 1 && ethernet_info_clicked(&wins[hit], mx, my))

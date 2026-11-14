@@ -24,7 +24,7 @@ static const char scancode_table[128] = {
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0
+    0,0,0,0,0,0
 };
 
 static const char scancode_shift_table[128] = {
@@ -36,7 +36,7 @@ static const char scancode_shift_table[128] = {
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0
+    0,0,0,0,0,0
 };
 
 static void kbd_enqueue(char c) {
@@ -69,6 +69,9 @@ void keyboard_handler(void) {
         if (sc == 0x4D) { kbd_enqueue(0x14); return; }
         return;
     }
+
+    /* F5 -> private UI action code (used by the C editor's Run command). */
+    if (sc == 0x3F) { kbd_enqueue(0x15); return; }
 
     if (sc == 0x2A || sc == 0x36) { shift_held = 1; return; }
     if (sc == 0xAA || sc == 0xB6) { shift_held = 0; return; }

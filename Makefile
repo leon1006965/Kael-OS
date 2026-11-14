@@ -16,7 +16,7 @@ ISO_IMG = kael.iso
 C_SRCS = kernel/kernel.c kernel/keyboard.c kernel/vga.c kernel/font.c \
          kernel/mouse.c kernel/desktop.c kernel/klib.c kernel/timer.c \
          kernel/serial.c kernel/pci.c kernel/rtl8139.c kernel/net.c \
-         kernel/sky2.c kernel/tcp.c kernel/http.c kernel/acpi.c
+         kernel/sky2.c kernel/tcp.c kernel/http.c kernel/acpi.c kernel/cmini.c
 ASM_SRCS = kernel/entry.asm kernel/idt.asm
 C_OBJS = $(C_SRCS:.c=.o)
 ASM_OBJS = $(ASM_SRCS:.asm=.o)

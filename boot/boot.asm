@@ -26,7 +26,7 @@ start:
     jne .use_chs
 
     mov word [edd_lba], 1
-    mov word [edd_left], 192
+    mov word [edd_left], 256
     mov word [edd_seg], KERNEL_OFFSET >> 4
 .read_chunk:
     ; At most 32 sectors per request, and never across a physical 64KB
@@ -71,7 +71,7 @@ start:
     ; Floppy CHS fallback. Read track-sized chunks so BIOSes that reject
     ; cross-track reads still load the complete kernel.
     mov word [chs_lba], 1
-    mov word [chs_left], 192
+    mov word [chs_left], 256
     mov word [chs_seg], KERNEL_OFFSET >> 4
 .chs_read:
     ; LBA -> cylinder/head/sector for 18 sectors per track, 2 heads.
@@ -137,8 +137,8 @@ start:
 .read_done:
     jc disk_error
 
-    mov ax, 0x0003
-    int 0x10
+    ; Kernel begins with a small real-mode VBE probe/setup stub.
+    call 0x0000:KERNEL_OFFSET
 
     in al, 0x92
     or al, 2
@@ -217,7 +217,7 @@ protected_mode_entry:
     mov gs, ax
     mov ss, ax
     mov esp, 0x90000
-    jmp KERNEL_OFFSET
+    jmp KERNEL_OFFSET + 128
 
 times 510 - ($ - $$) db 0
 dw 0xAA55

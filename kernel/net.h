@@ -96,6 +96,7 @@ extern int g_have_ip, g_nic_ok;
 extern int g_sky2_found, g_sky2_init_error;
 void net_init(void);
 void net_shutdown(void);
+void net_set_poll_hook(void (*hook)(void));
 void net_poll(void);
 int  net_parse_ip(const char* s, uint32_t* ip);
 void net_ip_str(uint32_t ip, char* out);
