@@ -4,6 +4,7 @@ global idt_install
 global sti_enable
 extern keyboard_handler
 extern mouse_handler
+extern timer_handler
 
 %macro IOWAIT 0
     out 0x80, al
@@ -85,6 +86,15 @@ idt_install:
     shr eax, 16
     mov word [idt_data + 44*8 + 6], ax
 
+    ; INT 32 timer (IRQ0)
+    mov eax, isr0
+    mov word [idt_data + 32*8 + 0], ax
+    mov word [idt_data + 32*8 + 2], bx
+    mov byte [idt_data + 32*8 + 4], 0
+    mov byte [idt_data + 32*8 + 5], 0x8E
+    shr eax, 16
+    mov word [idt_data + 32*8 + 6], ax
+
     ; Remap PIC with I/O delays
     mov al, 0x11
     out 0x20, al
@@ -139,6 +149,16 @@ isr12:
     call mouse_handler
     mov al, 0x20
     out 0xA0, al
+    out 0x20, al
+    popa
+    iret
+
+global isr0
+isr0:
+    pusha
+    cld
+    call timer_handler
+    mov al, 0x20
     out 0x20, al
     popa
     iret

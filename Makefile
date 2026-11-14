@@ -14,7 +14,9 @@ ASFLAGS = -f elf32
 FLOPPY_IMG = kael.img
 ISO_IMG = kael.iso
 C_SRCS = kernel/kernel.c kernel/keyboard.c kernel/vga.c kernel/font.c \
-         kernel/mouse.c kernel/desktop.c
+         kernel/mouse.c kernel/desktop.c kernel/klib.c kernel/timer.c \
+         kernel/serial.c kernel/pci.c kernel/rtl8139.c kernel/net.c \
+         kernel/sky2.c kernel/tcp.c kernel/http.c kernel/acpi.c
 ASM_SRCS = kernel/entry.asm kernel/idt.asm
 C_OBJS = $(C_SRCS:.c=.o)
 ASM_OBJS = $(ASM_SRCS:.asm=.o)
@@ -61,6 +63,9 @@ $(ISO_IMG): iso/boot/kael.elf iso/boot/grub/grub.cfg
 
 run: $(FLOPPY_IMG)
 	qemu-system-i386 -fda $(FLOPPY_IMG)
+
+run-net: $(FLOPPY_IMG)
+	qemu-system-i386 -fda $(FLOPPY_IMG) -netdev user,id=n0 -device rtl8139,netdev=n0
 
 run-iso: $(ISO_IMG)
 	qemu-system-i386 -cdrom $(ISO_IMG) -boot d

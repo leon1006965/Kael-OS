@@ -13,6 +13,9 @@ extern void sti_enable(void);
 extern void desktop_run(void);
 extern void keyboard_init(void);
 extern int mouse_init(void);
+extern void pit_init(void);
+extern void serial_init(void);
+extern void net_init(void);
 
 uint32_t mb_magic;
 uint32_t mb_info_ptr;
@@ -23,6 +26,7 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
     mb_info_ptr = info_ptr;
 
     idt_install();
+    pit_init();
 
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF);
@@ -37,9 +41,12 @@ void kernel_main(uint32_t magic, uint32_t info_ptr) {
     mask2 &= ~(1 << 2);
     outb(0x21, mask2);
 
-    outb(0x21, ~(1 << 1) & ~(1 << 2));
+    /* unmask IRQ0 (timer), IRQ1 (keyboard), IRQ2 (cascade for mouse) */
+    outb(0x21, ~((1 << 0) | (1 << 1) | (1 << 2)) & 0xFF);
 
     sti_enable();
+    serial_init();
+    net_init();
     desktop_run();
     while (1) { asm volatile("hlt"); }
 }

@@ -11,6 +11,32 @@ extern int mouse_get_x(void);
 extern int mouse_get_y(void);
 extern uint8_t mouse_get_buttons(void);
 
+/* networking (net.c / tcp.c / http.c / pci.c) */
+extern void net_poll(void);
+extern void net_shutdown(void);
+extern int acpi_poweroff(void);
+extern int net_parse_ip(const char* s, uint32_t* ip);
+extern void net_ip_str(uint32_t ip, char* out);
+extern int net_dhcp(char* err);
+extern int net_resolve(const char* name, uint32_t* ip, char* err);
+extern int net_ping(uint32_t ip, uint32_t* rtt_ms);
+extern int net_set_static(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns);
+extern const char* net_nic_name(void);
+extern int sky2_link_up(void);
+extern uint32_t g_ip, g_mask, g_gw, g_dns;
+extern uint8_t g_mac[6];
+extern int g_have_ip, g_nic_ok, g_sky2_found, g_sky2_init_error;
+extern uint32_t g_sky2_status_les, g_sky2_rx_status, g_sky2_rx_ok;
+extern uint32_t g_sky2_rx_bad, g_sky2_last_bad, g_sky2_tx_submit, g_sky2_tx_reports;
+extern uint32_t g_sky2_diag_valid, g_sky2_diag_chip, g_sky2_diag_rev, g_sky2_diag_ram_kb;
+extern uint32_t g_sky2_diag_gp_stat, g_sky2_diag_gp_ctrl, g_sky2_diag_phy11;
+extern uint32_t g_sky2_diag_rx_uc, g_sky2_diag_rx_bc, g_sky2_diag_rx_mc, g_sky2_diag_rx_fcs;
+extern int http_fetch(const char* url, char* out, uint32_t cap, uint32_t* out_len,
+                      int* status, char* err);
+extern int html_to_lines(const char* html, char lines[][76], int max_lines, int* count,
+                         char* title, int title_cap);
+extern int pci_list_nics(char lines[][72], int max);
+
 static void kael_itoa(int v, char* b) {
     if (v < 0) { *b++ = '-'; v = -v; }
     if (v == 0) { *b++ = '0'; *b = '\0'; return; }
@@ -18,6 +44,15 @@ static void kael_itoa(int v, char* b) {
     while (v > 0) { t[i++] = '0' + (v % 10); v /= 10; }
     for (int j = 0; j < i; j++) b[j] = t[i - 1 - j];
     b[i] = '\0';
+}
+
+static void kael_hex32(uint32_t v, char* out) {
+    static const char hex[] = "0123456789ABCDEF";
+    for (int i = 7; i >= 0; i--) {
+        out[i] = hex[v & 0xF];
+        v >>= 4;
+    }
+    out[8] = 0;
 }
 
 static int kael_atoi(const char* s) {
@@ -86,6 +121,8 @@ static int starts_with(const char* s, const char* p) {
 #define WIN_ABOUT 4
 #define WIN_CLOCK 5
 #define WIN_CALENDAR 6
+#define WIN_BROWSER 7
+#define WIN_ETHERNET 8
 
 /* CMOS Real-Time Clock */
 static inline void outb(uint16_t p, uint8_t v) { asm volatile("outb %0,%1" : : "a"(v), "Nd"(p)); }
@@ -113,11 +150,11 @@ static void rtc_init(void) {
 }
 
 /* Menu items */
-#define MENU_ITEMS 5
+#define MENU_ITEMS 6
 static const char* menu_labels[MENU_ITEMS] = {
-    " Terminal ", " Calculator ", " Clock ", " Calendar ", " Exit "
+    " Terminal ", " Browser ", " Calculator ", " Clock ", " Calendar ", " Power Off "
 };
-static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_CALC, WIN_CLOCK, WIN_CALENDAR, 99 };
+static int menu_types[MENU_ITEMS] = { WIN_TERMINAL, WIN_BROWSER, WIN_CALC, WIN_CLOCK, WIN_CALENDAR, 99 };
 
 /* Window state */
 typedef struct {
@@ -140,6 +177,9 @@ typedef struct {
     int op;
     int new_num;
     int error;
+    int eth_state;
+    int eth_more;
+    char eth_error[64];
 } window_t;
 
 #define MAX_WINDOWS 6
@@ -151,6 +191,14 @@ static int menu_sel = 0;
 static int drag_win = -1;
 static int last_mx = -1, last_my = -1;
 static uint8_t last_buttons = 0;
+
+/* Browser page (single page at a time) */
+#define PAGE_MAX_LINES 512
+static char page_lines[PAGE_MAX_LINES][76];
+static int page_line_count = 0;
+static int page_scroll = 0;
+static char page_title[32];
+static char page_url[64];
 
 /* Terminal filesystem */
 typedef struct {
@@ -238,6 +286,7 @@ static int win_create(int type) {
             kael_strcpy(wins[i].cwd, "/");
             wins[i].display[0] = 0; wins[i].acc = 0; wins[i].pending = 0;
             wins[i].op = 0; wins[i].new_num = 1; wins[i].error = 0;
+            wins[i].eth_state = 0; wins[i].eth_more = 0; wins[i].eth_error[0] = 0;
             switch (type) {
                 case WIN_TERMINAL:
                     wins[i].w = 50; wins[i].h = 14;
@@ -265,6 +314,17 @@ static int win_create(int type) {
                 case WIN_CALENDAR:
                     wins[i].w = 40; wins[i].h = 14;
                     kael_strcpy(wins[i].title, "Calendar");
+                    break;
+                case WIN_BROWSER:
+                    wins[i].w = 78; wins[i].h = 23;
+                    if (page_title[0]) kael_strcpy(wins[i].title, page_title);
+                    else if (page_url[0]) kael_strcpy(wins[i].title, page_url);
+                    else kael_strcpy(wins[i].title, "Browser");
+                    wins[i].title[31] = 0;
+                    break;
+                case WIN_ETHERNET:
+                    wins[i].w = 50; wins[i].h = 12;
+                    kael_strcpy(wins[i].title, "Ethernet");
                     break;
             }
             for (int j = 0; j < MAX_WINDOWS; j++) if (j != i) wins[j].focused = 0;
@@ -414,6 +474,92 @@ static void draw_window(int idx) {
             line[pos]=0; draw_text(cx, cy+3+row, line, ATTR(LIGHTGRAY, CONTENT_BG));
             day = (row == 0) ? fd + (7-fd) + 1 : day + 7;
         }
+    } else if (w->type == WIN_BROWSER) {
+        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
+        if (page_line_count == 0) {
+            draw_text(cx, cy, "(no page loaded)", ATTR(DARKGRAY, CONTENT_BG));
+            draw_text(cx, cy + 2, "In the Terminal window type:", ATTR(LIGHTGRAY, CONTENT_BG));
+            draw_text(cx, cy + 3, "  browse <url>", ATTR(LIGHTCYAN, CONTENT_BG));
+            draw_text(cx, cy + 4, "  e.g. browse neverssl.com", ATTR(DARKGRAY, CONTENT_BG));
+        } else {
+            if (page_scroll > page_line_count - ch) {
+                page_scroll = page_line_count - ch;
+                if (page_scroll < 0) page_scroll = 0;
+            }
+            for (int i = 0; i < ch && page_scroll + i < page_line_count; i++)
+                draw_text(cx, cy + i, page_lines[page_scroll + i], ATTR(WHITE, CONTENT_BG));
+            if (page_scroll + ch < page_line_count)
+                draw_text(cx + cw - 5, cy + ch - 1, "[dn]", ATTR(DARKGRAY, CONTENT_BG));
+            if (page_scroll > 0)
+                draw_text(cx, cy + ch - 1, "[up]", ATTR(DARKGRAY, CONTENT_BG));
+        }
+    } else if (w->type == WIN_ETHERNET) {
+        fill_cells(cx, cy, cw, ch, ' ', ATTR(CONTENT_FG, CONTENT_BG));
+        if (w->eth_state == 0) {
+            draw_text(cx + 1, cy + 1, "Setting up Ethernet...", ATTR(YELLOW, CONTENT_BG));
+            draw_text(cx + 1, cy + 3, "Detecting adapter and requesting DHCP lease.", ATTR(LIGHTGRAY, CONTENT_BG));
+        } else if (w->eth_state == 1) {
+            draw_text(cx + 1, cy + 1, "Successfully connected to Ethernet", ATTR(LIGHTGREEN, CONTENT_BG));
+            if (w->eth_more) {
+                char line[72], ip[24];
+                kael_strcpy(line, "Adapter: ");
+                kael_strcat(line, net_nic_name() ? net_nic_name() : "Ethernet");
+                draw_text(cx + 1, cy + 3, line, ATTR(WHITE, CONTENT_BG));
+                net_ip_str(g_ip, ip); kael_strcpy(line, "Lease: "); kael_strcat(line, ip);
+                draw_text(cx + 1, cy + 4, line, ATTR(LIGHTGRAY, CONTENT_BG));
+                net_ip_str(g_mask, ip); kael_strcpy(line, "Mask:   "); kael_strcat(line, ip);
+                draw_text(cx + 1, cy + 5, line, ATTR(LIGHTGRAY, CONTENT_BG));
+                net_ip_str(g_gw, ip); kael_strcpy(line, "Gateway:"); kael_strcat(line, " "); kael_strcat(line, ip);
+                draw_text(cx + 1, cy + 6, line, ATTR(LIGHTGRAY, CONTENT_BG));
+                net_ip_str(g_dns, ip); kael_strcpy(line, "DNS:    "); kael_strcat(line, ip);
+                draw_text(cx + 1, cy + 7, line, ATTR(LIGHTGRAY, CONTENT_BG));
+            }
+        } else if (w->eth_state == 2) {
+            draw_text(cx + 1, cy + 1, "Failed to connect to Ethernet", ATTR(LIGHTRED, CONTENT_BG));
+            if (w->eth_more) {
+                draw_text(cx + 1, cy + 3, w->eth_error, ATTR(WHITE, CONTENT_BG));
+                if (g_sky2_found && g_nic_ok) {
+                    char line[72], n[12];
+                    kael_strcpy(line, "TX "); kael_itoa((int)g_sky2_tx_submit, n); kael_strcat(line, n);
+                    kael_strcat(line, " reports "); kael_itoa((int)g_sky2_tx_reports, n); kael_strcat(line, n);
+                    draw_text(cx + 1, cy + 4, line, ATTR(LIGHTGRAY, CONTENT_BG));
+                    kael_strcpy(line, "Status "); kael_itoa((int)g_sky2_status_les, n); kael_strcat(line, n);
+                    kael_strcat(line, " RX "); kael_itoa((int)g_sky2_rx_status, n); kael_strcat(line, n);
+                    kael_strcat(line, " good "); kael_itoa((int)g_sky2_rx_ok, n); kael_strcat(line, n);
+                    kael_strcat(line, " bad "); kael_itoa((int)g_sky2_rx_bad, n); kael_strcat(line, n);
+                    draw_text(cx + 1, cy + 5, line, ATTR(LIGHTGRAY, CONTENT_BG));
+                }
+                if (g_sky2_diag_valid) {
+                    char line[72], h[9];
+                    kael_strcpy(line, "Chip "); kael_hex32(g_sky2_diag_chip, h); kael_strcat(line, h);
+                    kael_strcat(line, " rev "); kael_itoa((int)g_sky2_diag_rev, h); kael_strcat(line, h);
+                    draw_text(cx + 1, cy + 6, line, ATTR(LIGHTGRAY, CONTENT_BG));
+                    kael_strcpy(line, "GMAC RX UC/BC/MC/FCS: ");
+                    kael_itoa((int)g_sky2_diag_rx_uc, h); kael_strcat(line, h); kael_strcat(line, "/");
+                    kael_itoa((int)g_sky2_diag_rx_bc, h); kael_strcat(line, h); kael_strcat(line, "/");
+                    kael_itoa((int)g_sky2_diag_rx_mc, h); kael_strcat(line, h); kael_strcat(line, "/");
+                    kael_itoa((int)g_sky2_diag_rx_fcs, h); kael_strcat(line, h);
+                    draw_text(cx + 1, cy + 7, line, ATTR(LIGHTGRAY, CONTENT_BG));
+                }
+            } else if (w->eth_error[0]) {
+                draw_text(cx + 1, cy + 3, w->eth_error, ATTR(LIGHTGRAY, CONTENT_BG));
+            }
+        } else {
+            draw_text(cx + 1, cy + 1, "Ethernet not supported on this machine", ATTR(LIGHTRED, CONTENT_BG));
+            if (w->eth_more) {
+                char devices[4][72];
+                int count = pci_list_nics(devices, 4);
+                draw_text(cx + 1, cy + 3, "Detected PCI network devices:", ATTR(LIGHTGRAY, CONTENT_BG));
+                for (int i = 0; i < count && i < 4; i++)
+                    draw_text(cx + 1, cy + 4 + i, devices[i], ATTR(LIGHTGRAY, CONTENT_BG));
+                if (!count) draw_text(cx + 1, cy + 4, "No supported adapter detected.", ATTR(LIGHTGRAY, CONTENT_BG));
+            }
+        }
+        if (w->eth_state != 0) {
+            int by = cy + ch - 1;
+            fill_cells(cx + 1, by, 16, 1, ' ', ATTR(WHITE, BLUE));
+            draw_text(cx + 2, by, w->eth_more ? "[ Back ]" : "[ More info ]", ATTR(WHITE, BLUE));
+        }
     }
 }
 
@@ -465,13 +611,270 @@ static void term_add_line(window_t* w, const char* text) {
     w->line_count++;
 }
 
+static const char* next_tok(const char* p, char* out, int cap) {
+    while (*p == ' ') p++;
+    int i = 0;
+    while (*p && *p != ' ' && i < cap - 1) out[i++] = *p++;
+    out[i] = 0;
+    while (*p == ' ') p++;
+    return p;
+}
+
+static void sky2_stats_lines(window_t* w) {
+    if (!g_sky2_found || !g_nic_ok) return;
+    char buf[72], n[12];
+    kael_strcpy(buf, "sky2 tx ");
+    kael_itoa((int)g_sky2_tx_submit, n); kael_strcat(buf, n);
+    kael_strcat(buf, " reports ");
+    kael_itoa((int)g_sky2_tx_reports, n); kael_strcat(buf, n);
+    term_add_line(w, buf);
+
+    kael_strcpy(buf, "sky2 status ");
+    kael_itoa((int)g_sky2_status_les, n); kael_strcat(buf, n);
+    kael_strcat(buf, " rx ");
+    kael_itoa((int)g_sky2_rx_status, n); kael_strcat(buf, n);
+    kael_strcat(buf, " ok ");
+    kael_itoa((int)g_sky2_rx_ok, n); kael_strcat(buf, n);
+    kael_strcat(buf, " bad ");
+    kael_itoa((int)g_sky2_rx_bad, n); kael_strcat(buf, n);
+    term_add_line(w, buf);
+
+    if (g_sky2_rx_bad) {
+        kael_strcpy(buf, "sky2 last RX status ");
+        kael_itoa((int)g_sky2_last_bad, n); kael_strcat(buf, n);
+        term_add_line(w, buf);
+    }
+
+    if (g_sky2_diag_valid) {
+        char h[9];
+        kael_strcpy(buf, "sky2 chip ");
+        kael_hex32(g_sky2_diag_chip, h); kael_strcat(buf, h);
+        kael_strcat(buf, " rev ");
+        kael_itoa((int)g_sky2_diag_rev, n); kael_strcat(buf, n);
+        kael_strcat(buf, " RAM ");
+        kael_itoa((int)g_sky2_diag_ram_kb, n); kael_strcat(buf, n);
+        kael_strcat(buf, "K");
+        term_add_line(w, buf);
+
+        kael_strcpy(buf, "PHY11 ");
+        kael_hex32(g_sky2_diag_phy11, h); kael_strcat(buf, h);
+        kael_strcat(buf, " GP ");
+        kael_hex32(g_sky2_diag_gp_stat, h); kael_strcat(buf, h);
+        kael_strcat(buf, "/");
+        kael_hex32(g_sky2_diag_gp_ctrl, h); kael_strcat(buf, h);
+        term_add_line(w, buf);
+
+        kael_strcpy(buf, "GMAC MIB UC ");
+        kael_itoa((int)g_sky2_diag_rx_uc, n); kael_strcat(buf, n);
+        kael_strcat(buf, " BC ");
+        kael_itoa((int)g_sky2_diag_rx_bc, n); kael_strcat(buf, n);
+        term_add_line(w, buf);
+        kael_strcpy(buf, "GMAC MIB MC ");
+        kael_itoa((int)g_sky2_diag_rx_mc, n); kael_strcat(buf, n);
+        kael_strcat(buf, " FCS errors ");
+        kael_itoa((int)g_sky2_diag_rx_fcs, n); kael_strcat(buf, n);
+        term_add_line(w, buf);
+    }
+}
+
+static void netinfo_cmd(window_t* w) {
+    char buf[72], t[24];
+    if (!g_nic_ok) {
+        if (g_sky2_found) {
+            term_add_line(w, "Marvell Yukon-II 88E8072 found");
+            if (g_sky2_init_error == 1)
+                term_add_line(w, "Init failed: unusable MMIO BAR");
+            else if (g_sky2_init_error == 2)
+                term_add_line(w, "Init failed: MMIO not responding");
+            else if (g_sky2_init_error == 3)
+                term_add_line(w, "Init failed: invalid MAC address");
+            else if (g_sky2_init_error == 4)
+                term_add_line(w, "Init failed: Yukon reset/PHY");
+            else
+                term_add_line(w, "sky2 packet driver not ready");
+        } else {
+            term_add_line(w, "No supported Ethernet NIC found");
+        }
+    } else {
+        static const char* hex = "0123456789abcdef";
+        kael_strcpy(buf, "NIC: ");
+        kael_strcat(buf, net_nic_name());
+        kael_strcat(buf, " OK");
+        term_add_line(w, buf);
+        kael_strcpy(buf, "MAC: ");
+        for (int i = 0; i < 6; i++) {
+            char b2[3] = { hex[g_mac[i] >> 4], hex[g_mac[i] & 0xF], 0 };
+            kael_strcat(buf, b2);
+            if (i < 5) kael_strcat(buf, ":");
+        }
+        term_add_line(w, buf);
+        if (g_sky2_found)
+            term_add_line(w, sky2_link_up() ? "Ethernet link: up" :
+                          "Ethernet link: down (check cable)");
+        sky2_stats_lines(w);
+    }
+    if (g_have_ip) {
+        net_ip_str(g_ip, t);
+        kael_strcpy(buf, "IP:  "); kael_strcat(buf, t);
+        net_ip_str(g_mask, t); kael_strcat(buf, " mask "); kael_strcat(buf, t);
+        term_add_line(w, buf);
+        net_ip_str(g_gw, t);
+        kael_strcpy(buf, "GW:  "); kael_strcat(buf, t);
+        net_ip_str(g_dns, t); kael_strcat(buf, " dns "); kael_strcat(buf, t);
+        term_add_line(w, buf);
+    } else {
+        term_add_line(w, "IP: not configured");
+        term_add_line(w, "use 'dhcp' or 'ipconfig'");
+    }
+    char nics[6][72];
+    int n = pci_list_nics(nics, 6);
+    if (n > 0) {
+        term_add_line(w, "PCI network devices:");
+        for (int i = 0; i < n; i++) term_add_line(w, nics[i]);
+    }
+}
+
+static void ethernet_startup(void) {
+    int idx = win_create(WIN_ETHERNET);
+    if (idx < 0) return;
+    window_t* w = &wins[idx];
+    if (!g_nic_ok) {
+        if (g_sky2_found) {
+            w->eth_state = 2;
+            kael_strcpy(w->eth_error, "Supported Yukon adapter failed to initialize.");
+        } else {
+            w->eth_state = 3;
+            kael_strcpy(w->eth_error, "No supported Realtek or Yukon adapter detected.");
+        }
+        redraw();
+        return;
+    }
+
+    w->eth_state = 0;
+    redraw();
+    char err[64];
+    if (g_have_ip || net_dhcp(err) == 0) {
+        w->eth_state = 1;
+        w->eth_error[0] = 0;
+    } else {
+        w->eth_state = 2;
+        kael_strcpy(w->eth_error, err);
+    }
+    redraw();
+}
+
+static int ethernet_info_clicked(const window_t* w, int mx, int my) {
+    int row = w->y + w->h - 2;
+    return my == row && mx >= w->x + 2 && mx < w->x + 18;
+}
+
+static void browse_page(window_t* w, const char* url) {
+    while (*url == ' ') url++;
+    if (!*url) { term_add_line(w, "usage: browse <url>"); return; }
+    if (!g_nic_ok) {
+        term_add_line(w, g_sky2_found ?
+                      "Marvell 88E8072 found; sky2 init failed" :
+                      "browse: no supported network card");
+        return;
+    }
+    if (!g_have_ip) {
+        char e[48];
+        term_add_line(w, "No IP - running DHCP...");
+        redraw();
+        if (net_dhcp(e) < 0) {
+            char b[72];
+            kael_strcpy(b, "DHCP failed: "); kael_strcat(b, e);
+            term_add_line(w, b);
+            return;
+        }
+    }
+    static char resp[32768];
+    uint32_t blen = 0;
+    int status = 0;
+    char e[64];
+
+    char msg[72];
+    kael_strcpy(msg, "Fetching ");
+    const char* up = url;
+    int ui = 9;
+    while (*up && ui < 66) msg[ui++] = *up++;
+    msg[ui] = 0;
+    term_add_line(w, msg);
+    redraw();
+
+    if (http_fetch(url, resp, sizeof resp, &blen, &status, e) < 0) {
+        char b[72];
+        kael_strcpy(b, "Error: "); kael_strcat(b, e);
+        term_add_line(w, b);
+        return;
+    }
+    if (blen >= sizeof resp) blen = sizeof resp - 1;
+    resp[blen] = 0;
+
+    char n[12];
+    kael_strcpy(msg, "HTTP ");
+    kael_itoa(status, n); kael_strcat(msg, n);
+    kael_strcat(msg, ", ");
+    kael_itoa((int)blen, n); kael_strcat(msg, n);
+    kael_strcat(msg, " bytes");
+    term_add_line(w, msg);
+
+    page_line_count = 0;
+    page_scroll = 0;
+    page_title[0] = 0;
+    html_to_lines(resp, page_lines, PAGE_MAX_LINES, &page_line_count,
+                  page_title, sizeof page_title);
+    if (page_line_count == 0) {
+        kael_strcpy(page_lines[0], "(page had no text content)");
+        page_line_count = 1;
+    }
+    page_url[0] = 0;
+    {
+        int i = 0;
+        while (url[i] && i < 63) { page_url[i] = url[i]; i++; }
+        page_url[i] = 0;
+    }
+
+    int bi = win_create(WIN_BROWSER);
+    if (bi >= 0) {
+        if (page_title[0]) kael_strcpy(wins[bi].title, page_title);
+        else kael_strcpy(wins[bi].title, "Browser");
+        wins[bi].title[31] = 0;
+    }
+}
+
+static void poweroff_system(void) {
+    /* This OS has no process scheduler; stop networking and the DMA engines. */
+    net_shutdown();
+    asm volatile("cli");
+    outb(0x21, 0xFF);
+    outb(0xA1, 0xFF);
+
+    fill_cells(0, 0, COLS, ROWS, ' ', ATTR(WHITE, BLACK));
+    draw_text_centered(0, 11, COLS, "It is now safe to turn off your computer.", ATTR(LIGHTGREEN, BLACK));
+    draw_text_centered(0, 13, COLS, "Requesting ACPI power off...", ATTR(LIGHTGRAY, BLACK));
+    present();
+
+    if (!acpi_poweroff()) {
+        fill_cells(0, 13, COLS, 1, ' ', ATTR(WHITE, BLACK));
+        draw_text_centered(0, 13, COLS, "ACPI power off unavailable; use the power button.", ATTR(YELLOW, BLACK));
+        present();
+    }
+    for (;;) asm volatile("hlt");
+}
+
 static void term_process(window_t* w, const char* cmd) {
     term_add_line(w, cmd);
     if (kael_strcmp(cmd, "help") == 0) {
         term_add_line(w, "Commands:");
         term_add_line(w, "  ls, cd, cat, echo, clear");
         term_add_line(w, "  ver, fetch, date, cal");
+        term_add_line(w, "  dhcp, ipconfig, netinfo");
+        term_add_line(w, "  ping <ip/host>");
+        term_add_line(w, "  browse <url>");
         term_add_line(w, "  halt");
+    } else if (kael_strcmp(cmd, "netinfo") == 0) {
+        netinfo_cmd(w);
     } else if (kael_strcmp(cmd, "ls") == 0) {
         int found = 0;
         for (int i = 0; i < MAX_FS; i++) {
@@ -532,6 +935,92 @@ static void term_process(window_t* w, const char* cmd) {
             row[pos++]=' ';row[pos++]=' ';
             if ((fd + d - 1) % 7 == 0 || d == dim) { row[pos]=0; term_add_line(w, row); pos = 0; }
         }
+    } else if (kael_strcmp(cmd, "dhcp") == 0) {
+        if (!g_nic_ok) {
+            term_add_line(w, g_sky2_found ?
+                          "Marvell 88E8072 found; sky2 init failed" :
+                          "No supported network card.");
+        } else {
+            char e[48];
+            term_add_line(w, "DHCP requesting lease...");
+            redraw();
+            if (net_dhcp(e) == 0) {
+                char b[72], t[24];
+                net_ip_str(g_ip, t);
+                kael_strcpy(b, "Leased: "); kael_strcat(b, t);
+                term_add_line(w, b);
+                net_ip_str(g_gw, t);
+                kael_strcpy(b, "GW:    "); kael_strcat(b, t);
+                term_add_line(w, b);
+            } else {
+                char b[72];
+                kael_strcpy(b, "DHCP failed: "); kael_strcat(b, e);
+                term_add_line(w, b);
+                sky2_stats_lines(w);
+            }
+        }
+    } else if (starts_with(cmd, "ipconfig ")) {
+        char a[24], b[24], c[24], d[24];
+        const char* p = cmd + 9;
+        p = next_tok(p, a, 24);
+        p = next_tok(p, b, 24);
+        p = next_tok(p, c, 24);
+        next_tok(p, d, 24);
+        uint32_t ip, mask, gw, dns = 0;
+        if (!net_parse_ip(a, &ip) || !net_parse_ip(b, &mask) || !net_parse_ip(c, &gw)) {
+            term_add_line(w, "usage: ipconfig ip mask gw [dns]");
+        } else {
+            if (!net_parse_ip(d, &dns)) dns = gw;
+            if (net_set_static(ip, mask, gw, dns) == 0) {
+                char r[72], t[24];
+                net_ip_str(ip, t);
+                kael_strcpy(r, "Static IP set: "); kael_strcat(r, t);
+                term_add_line(w, r);
+            } else {
+                term_add_line(w, "No network card found.");
+            }
+        }
+    } else if (starts_with(cmd, "ping ")) {
+        char e[48], t[24];
+        uint32_t ip = 0;
+        const char* target = cmd + 5;
+        while (*target == ' ') target++;
+        if (!net_parse_ip(target, &ip)) {
+            if (net_resolve(target, &ip, e) < 0) {
+                char b[72];
+                kael_strcpy(b, "ping: "); kael_strcat(b, e);
+                term_add_line(w, b);
+                ip = 0;
+            }
+        }
+        if (ip) {
+            net_ip_str(ip, t);
+            for (int i = 0; i < 4 && ip; i++) {
+                uint32_t rtt = 0;
+                int rc = net_ping(ip, &rtt);
+                char b[72], n[12];
+                if (rc == 0) {
+                    kael_strcpy(b, "64 bytes from ");
+                    kael_strcat(b, t);
+                    kael_strcat(b, ": time=");
+                    kael_itoa((int)rtt, n);
+                    kael_strcat(b, n);
+                    kael_strcat(b, " ms");
+                } else if (rc == -3) {
+                    kael_strcpy(b, "not configured - run dhcp");
+                    ip = 0;
+                } else if (rc == -2) {
+                    kael_strcpy(b, "cannot reach host (ARP fail)");
+                    ip = 0;
+                } else {
+                    kael_strcpy(b, "request timed out");
+                }
+                term_add_line(w, b);
+                redraw();
+            }
+        }
+    } else if (starts_with(cmd, "browse ") || starts_with(cmd, "www ")) {
+        browse_page(w, starts_with(cmd, "www ") ? cmd + 4 : cmd + 7);
     } else if (kael_strcmp(cmd, "halt") == 0) {
         fill_cells(0, 0, COLS, ROWS, ' ', ATTR(WHITE, BLACK));
         draw_text_centered(0, 12, COLS, "System halted.", ATTR(WHITE, BLACK));
@@ -662,9 +1151,11 @@ void desktop_run(void) {
     win_create(WIN_TERMINAL);
 
     redraw();
+    ethernet_startup();
 
     while (1) {
         char c = kbd_getchar();
+        net_poll();
         int mx = mouse_get_x();
         int my = mouse_get_y();
         uint8_t btns = mouse_get_buttons();
@@ -724,7 +1215,7 @@ void desktop_run(void) {
             } else if (menu_open) {
                 if (c == '\n' || c == '\r') {
                     menu_open = 0;
-                    if (menu_types[menu_sel] == 99) { fill_cells(0,0,COLS,ROWS,' ',ATTR(WHITE,BLACK)); draw_text_centered(0,12,COLS,"Goodbye!",ATTR(WHITE,BLACK)); present(); while(1) asm volatile("hlt"); }
+                    if (menu_types[menu_sel] == 99) { poweroff_system(); }
                     win_create(menu_types[menu_sel]);
                     need_redraw = 1;
                 } else if (c == 0x11) { menu_sel = (menu_sel - 1 + MENU_ITEMS) % MENU_ITEMS; need_redraw = 1; }
@@ -732,6 +1223,21 @@ void desktop_run(void) {
             } else if (fw >= 0) {
                 if (wins[fw].type == WIN_TERMINAL) {
                     term_key(&wins[fw], c);
+                    need_redraw = 1;
+                } else if (wins[fw].type == WIN_BROWSER &&
+                           (c == 0x11 || c == 0x12 || c == 0x13 || c == 0x14)) {
+                    /* arrows scroll the page */
+                    int step = (c == 0x11) ? -1 : (c == 0x12) ? 1 :
+                               (c == 0x13) ? -10 : 10;
+                    page_scroll += step;
+                    int vis = wins[fw].h - 2;
+                    if (page_scroll > page_line_count - vis)
+                        page_scroll = page_line_count - vis;
+                    if (page_scroll < 0) page_scroll = 0;
+                    need_redraw = 1;
+                } else if (wins[fw].type == WIN_ETHERNET &&
+                           (c == 'm' || c == 'M' || c == '\n' || c == '\r')) {
+                    wins[fw].eth_more = !wins[fw].eth_more;
                     need_redraw = 1;
                 } else if (c == 'q') {
                     win_close(fw);
@@ -758,7 +1264,7 @@ void desktop_run(void) {
                         if (item >= 0 && item < MENU_ITEMS) {
                             menu_sel = item;
                             menu_open = 0;
-                            if (menu_types[item] == 99) { fill_cells(0,0,COLS,ROWS,' ',ATTR(WHITE,BLACK)); draw_text_centered(0,12,COLS,"Goodbye!",ATTR(WHITE,BLACK)); present(); while(1) asm volatile("hlt"); }
+                            if (menu_types[item] == 99) { poweroff_system(); }
                             win_create(menu_types[item]);
                             need_redraw = 1;
                         }
@@ -787,6 +1293,9 @@ void desktop_run(void) {
                         if (wins[hit].type == WIN_CALC) {
                             calc_click(&wins[hit], mx, my);
                         }
+                        if (wins[hit].type == WIN_ETHERNET &&
+                            hit_type == 1 && ethernet_info_clicked(&wins[hit], mx, my))
+                            wins[hit].eth_more = !wins[hit].eth_more;
                         need_redraw = 1;
                     }
                 }
@@ -822,6 +1331,7 @@ void desktop_run(void) {
         last_my = my;
         last_buttons = btns;
 
-        for (volatile int i = 0; i < 20000; i++);
+        /* Avoid burning a core while idle; IRQ0/keyboard/mouse wake us. */
+        asm volatile("hlt");
     }
 }
